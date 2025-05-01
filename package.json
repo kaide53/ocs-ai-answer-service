@@ -1,0 +1,17 @@
+{
+    "name": "ai-local-answer-service",
+    "version": "1.0.0",
+    "description": "AI 本地题库服务，适用于 OCS 插件答题",
+    "main": "server.js",
+    "scripts": {
+      "start": "node server.js"
+    },
+    "dependencies": {
+      "axios": "^1.6.0",
+      "dotenv": "^16.0.0",
+      "express": "^4.18.2"
+    },
+    "keywords": [],
+    "author": "Kaide",
+    "license": "MIT"
+  }
