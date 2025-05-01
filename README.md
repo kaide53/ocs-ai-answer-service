@@ -26,6 +26,27 @@
    - 编辑 `server.js` 中的 `prompt` 
    - 格式建议保持"题目+选项"的结构
 --------------------------------------------------------------------------------------------
+OCS题库配置
+在OCS中配置题库时，请使用以下JSON配置：
+
+[
+    {
+        "name": "AI本地题库",
+        "url": "http://localhost:3000/answer",
+        "method": "post",
+        "contentType": "json",
+        "type": "GM_xmlhttpRequest",
+        "headers": {
+            "Content-Type": "application/json"
+        },
+        "data": {
+            "question": "${title}",
+            "options": "${options}"
+        },
+        "handler": "return (res)=> res.code === 1 ? [res.question, res.answer] : undefined"
+    }
+]
+--------------------------------------------------------------------------------------------
 启动服务
    Mac/Linux:
     chmod +x start.sh
