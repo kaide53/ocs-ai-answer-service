@@ -100,10 +100,19 @@ ${pureOptions.map((opt, i) => `${String.fromCharCode(65 + i)}. ${opt}`).join('\n
 });
 
 function parseOptions(optionStr) {
-  return optionStr
-    .split(/(?=[A-F]\.)/)
-    .map(opt => opt.trim())
-    .filter(Boolean);
+  // 检查字符串中是否包含类似 "A." 这种格式的前缀
+  if (/[A-F]\./.test(optionStr)) {
+    return optionStr
+      .split(/(?=[A-F]\.)/)
+      .map(opt => opt.trim())
+      .filter(Boolean);
+  } else {
+    // 如果没有字母前缀，则按换行符拆分选项（兼容不同系统的换行符）
+    return optionStr
+      .split(/\r?\n/)
+      .map(opt => opt.trim())
+      .filter(Boolean);
+  }
 }
 
 app.listen(port, () => {
