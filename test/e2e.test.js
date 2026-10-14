@@ -164,6 +164,28 @@ test('每题可以单独指定课程，课程名会进提示词', async () => {
   assert.strictEqual(without.answer, 'A');
 });
 
+test('OCS 可用性探测：HEAD /answer?t=... 必须是 200（否则面板显示连接失败 404）', async () => {
+  const res = await fetch(base + '/answer?t=' + Date.now(), { method: 'HEAD' });
+  assert.strictEqual(res.status, 200);
+});
+
+test('OCS 探测回退 GET /answer?t=... 也是 200，且不会触发模型调用', async () => {
+  const res = await fetch(base + '/answer?t=' + Date.now());
+  assert.strictEqual(res.status, 200);
+  const j = await res.json();
+  assert.strictEqual(j.ok, true);
+  assert.strictEqual(j.code, 0); // 自述信息，不是答案
+});
+
+test('GET /answer 带 question 参数时也能答题', async () => {
+  const params = new URLSearchParams({ question: '测试 [OK] GET', options: 'A. 甲\nB. 乙\nC. 丙', type: 'single' });
+  const res = await fetch(base + '/answer?' + params.toString());
+  assert.strictEqual(res.status, 200);
+  const j = await res.json();
+  assert.strictEqual(j.code, 1);
+  assert.strictEqual(j.answer, 'C');
+});
+
 test('/health 可用', async () => {
   const res = await fetch(base + '/health');
   const j = await res.json();

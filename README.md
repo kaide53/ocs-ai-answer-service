@@ -81,6 +81,16 @@
 
 `${type}` 是 OCS 官方支持的特殊占位符，取值是 `single` / `multiple` / `judgement` / `completion`（已对照 OCS 官方文档与源码确认）。
 
+### 关于面板上的「可用性检测」
+
+OCS 5.x 的题库面板会先发一个 **HEAD** 请求（只有 405/501 才回退 GET）到题库 url，并且**只把 2xx/3xx 当作「连接成功」**。服务端为此注册了 `GET /answer`：
+
+- `HEAD/GET /answer?t=<时间戳>` → 200 + 一段自述信息，面板会显示「连接成功（200）」；
+- 没有题目参数时**不会**触发模型调用，不花你的 token；
+- 顺带支持 `GET /answer?question=...&options=...&type=...`，所以题库配置也可以用 `"method": "get"`。
+
+如果面板仍然显示失败，先确认服务已经启动（浏览器打开 `http://localhost:3000/` 能返回 json），以及油猴的 `@connect` 允许了 localhost。
+
 ### 多门课程怎么用（COURSE_CONTEXT 不绑定任何一门课）
 
 服务端默认不知道你在上什么课，**推荐留空** `COURSE_CONTEXT`：模型会先自己判断题干属于哪门学科（把判断写进 `subject` 字段），再按那门学科的教材、定义与公式作答。于是一台服务可以同时应付近代史、马原、计算机、外语等不同课程的题。
