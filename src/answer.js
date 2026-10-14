@@ -83,10 +83,11 @@ async function askWithVoting(messages, ctx) {
   return best.run;
 }
 
-async function run({ question, options, type }) {
+async function run({ question, options, type, courseContext }) {
   let reference = '';
   try {
-    reference = await retrieval.retrieve({ question, options, type });
+    // 检索时带上课程语境，能显著提升关键词抽取的命中率；留空则只用题干
+    reference = await retrieval.retrieve({ question, options, type, courseContext });
   } catch (err) {
     console.warn('[retrieval] 检索异常，忽略：' + (err && err.message ? err.message : err));
   }
@@ -96,7 +97,7 @@ async function run({ question, options, type }) {
     options,
     type,
     reference,
-    courseContext: cfg.COURSE_CONTEXT,
+    courseContext,
     separator: cfg.ANSWER.MULTI_SEPARATOR,
   });
 
@@ -123,9 +124,10 @@ async function run({ question, options, type }) {
  * @param {string} p.question
  * @param {string} p.options 原始选项字符串
  * @param {string} [p.type]
+ * @param {string} [p.course] 可选：本门课的课程名，覆盖 .env 的 COURSE_CONTEXT
  * @returns {Promise<{code:number, question?:string, answer?:string}>}
  */
-async function answerQuestion({ question, options: rawOptions, type }) {
+async function answerQuestion({ question, options: rawOptions, type, course }) {
   const q = String(question == null ? '' : question).trim();
   const parsed = parseOptions(rawOptions);
   const qtype = normalizeType(type);
@@ -136,6 +138,9 @@ async function answerQuestion({ question, options: rawOptions, type }) {
     return { code: 0, msg: '选项为空或无法解析' };
   }
 
+  // 课程名只是提示，不影响题目身份：同一个题目在不同课程里答案相同，缓存/纠错表按题目本身命中
+  const courseContext = String(course == null ? '' : course).trim() || cfg.COURSE_CONTEXT;
+
   const key = cache.hashKey(q, rawOptions, qtype);
 
   const cached = cache.get(key);
@@ -145,7 +150,7 @@ async function answerQuestion({ question, options: rawOptions, type }) {
 
   if (inflight.has(key)) return await inflight.get(key);
 
-  const task = run({ question: q, options: parsed, type: qtype });
+  const task = run({ question: q, options: parsed, type: qtype, courseContext });
   inflight.set(key, task);
   let result;
   try {

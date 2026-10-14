@@ -39,6 +39,9 @@ function mockHandler(req, res) {
       content = JSON.stringify({ answers: ['B', 'A'] });
     } else if (user.includes('[JUDGE]')) {
       content = JSON.stringify({ answers: ['A'] });
+    } else if (user.includes('[COURSE]')) {
+      // 只有课程名真的进了 system 提示词才返回 D，否则返回 A
+      content = JSON.stringify({ answers: user.includes('当前科目：数据结构') ? ['D'] : ['A'] });
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -71,6 +74,7 @@ test.before(async () => {
   cfg.CACHE.ENABLED = true;
   cfg.SEARCH.ENABLED = false;
   cfg.ANSWER.FALLBACK_ON_EMPTY = 'none';
+  cfg.COURSE_CONTEXT = ''; // 不受本机 .env 影响
 
   const { createApp } = require('../src/app');
   appServer = createApp().listen(0, '127.0.0.1');
@@ -149,6 +153,15 @@ test('纠错表命中后不再请求模型（缓存命中）', async () => {
   assert.strictEqual(first.answer, 'B');
   assert.deepStrictEqual(second.letters, ['B']);
   assert.strictEqual(second.source, 'wrongbook');
+});
+
+test('每题可以单独指定课程，课程名会进提示词', async () => {
+  const opts = 'A. 甲\nB. 乙\nC. 丙\nD. 丁';
+  const withCourse = await ask({ question: '测试 [COURSE]', options: opts, type: 'single', course: '数据结构' });
+  assert.strictEqual(withCourse.answer, 'D');
+
+  const without = await ask({ question: '测试 [COURSE] 无课程', options: opts, type: 'single' });
+  assert.strictEqual(without.answer, 'A');
 });
 
 test('/health 可用', async () => {

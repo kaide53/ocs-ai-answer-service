@@ -122,11 +122,11 @@ function shouldSearch({ question, type, mode }) {
 /**
  * @returns {Promise<string>} 参考资料纯文本；检索失败或未启用时返回空串
  */
-async function retrieve({ question, options, type, mode }) {
+async function retrieve({ question, options, type, mode, courseContext }) {
   if (!cfg.SEARCH.ENABLED) return '';
   if (!shouldSearch({ question, type, mode: mode || cfg.SEARCH.MODE })) return '';
 
-  const queries = buildQueries({ question, courseContext: cfg.COURSE_CONTEXT });
+  const queries = buildQueries({ question, courseContext: courseContext || cfg.COURSE_CONTEXT });
   if (!queries.length) return '';
 
   const collected = [];

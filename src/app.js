@@ -33,11 +33,16 @@ function createApp() {
     const started = Date.now();
     console.log('=========================================');
     console.log('题目：', body.question);
-    console.log('题型：', body.type || '(未传)', '｜原始选项：', body.options);
+    console.log('题型：', body.type || '(未传)', '｜课程：', body.course || '(用默认)', '｜原始选项：', body.options);
 
     let result;
     try {
-      result = await answerQuestion({ question: body.question, options: body.options, type: body.type });
+      result = await answerQuestion({
+        question: body.question,
+        options: body.options,
+        type: body.type,
+        course: body.course, // 可选：每题单独指定课程，留空则用 .env 的 COURSE_CONTEXT
+      });
     } catch (err) {
       console.error('[answer] 出错：', (err && err.message) || err);
       result = { code: 0, msg: '答题服务异常：' + ((err && err.message) || err) };

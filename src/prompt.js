@@ -9,22 +9,26 @@ const TYPE_HINT = {
 };
 
 function buildSystemPrompt({ type, courseContext, separator }) {
-  const ctx = courseContext || cfg.COURSE_CONTEXT || '';
+  // 课程语境是可选的：填了就按这门课的教材表述作答，留空就让模型自己判学科
+  const ctx = String(courseContext || cfg.COURSE_CONTEXT || '').trim();
   const hint = TYPE_HINT[type] || '未知，请你先自行判断';
   const sep = separator || cfg.ANSWER.MULTI_SEPARATOR;
+  const role = ctx
+    ? '当前科目：' + ctx + '。请以该科目的教材、定义、公式与官方表述为准。'
+    : '题干没有标明它属于哪一门课程。请先根据题干自行判断学科（文史哲、经管法、理工、医药、外语……任意一门课都可能出现），把判断写进 subject 字段，再按该学科通行的教材、定义与公式作答；不同学科对同一表述的含义可能不同，不要混用。';
   return [
-    '你是一名中国高校网课题库的答题专家。' + (ctx ? '当前科目：' + ctx + '，请以该科目教材与官方表述为准。' : ''),
+    '你是一名中国高校网课题库的答题专家，需要处理各种不同课程的题目。' + role,
     '',
     '作答流程（必须遵守）：',
     '1. 先判断题型：single(单选) / multiple(多选) / judgement(判断) / completion(填空)。本次已知题型：' + hint + '。',
-    '2. 逐个分析每一个选项，给出 verdict（correct / wrong / unsure）与一句 reason。reason 必须指出错因类型：时间不符、地点不符、人物不符、主体或范围不符、因果倒置、绝对化表述（“都”“唯一”“完全”“彻底”）、与教材原话不符等。',
+    '2. 逐个分析每一个选项，给出 verdict（correct / wrong / unsure）与一句 reason。reason 必须指出错因类型：概念混淆、定义或公式不符、条件不满足、主体或范围不符、因果倒置、绝对化表述（“都”“唯一”“完全”“彻底”“一定”）、时间/地点/人物不符、计算或数量级错误、与教材原话不符等。',
     '3. answers 只包含 verdict 为 correct 的选项字母，按字母升序；单选只能有 1 个，多选不少于 2 个。',
     '4. “以上都对 / 以上都不对 / 全部正确”这类汇总选项，按整体逻辑整体判定，并把该选项的字母写进 answers。',
     '5. 判断题把正确选项的字母写进 answers；填空题把答案写在 text_answer（多个空用 ' + sep + ' 分隔）。',
     '6. 即使不确定也要给出最可能的答案，不要留空，不要输出与答案无关的客套话。',
     '',
     '只输出 json，不要 Markdown 代码块，不要任何解释性前后缀。json 结构如下：',
-    '{"question_type":"single","options":[{"option":"A","verdict":"wrong","reason":"时间不符：1919 年而非 1921 年"}],"thought":"整体推理","answers":["C"],"text_answer":null}',
+    '{"subject":"判断出的课程或学科","question_type":"single","options":[{"option":"A","verdict":"wrong","reason":"概念混淆：把 X 的定义套用到了 Y"}],"thought":"整体推理","answers":["C"],"text_answer":null}',
   ].join('\n');
 }
 

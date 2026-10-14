@@ -53,7 +53,12 @@ async function ask(question) {
     const res = await fetch(baseUrl + '/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: question.question, options: question.options, type: question.type }),
+      body: JSON.stringify({
+        question: question.question,
+        options: question.options,
+        type: question.type,
+        course: question.course || undefined,
+      }),
       signal: ac.signal,
     });
     return await res.json();
@@ -68,7 +73,8 @@ async function ask(question) {
     process.exit(1);
   }
   const dataset = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const questions = dataset.questions || dataset;
+  // 题集可以给一个顶层 course 作为默认课程；每题也能用 course 字段单独覆盖
+  const questions = (dataset.questions || dataset).map((q) => Object.assign({ course: dataset.course || '' }, q));
 
   console.log('服务地址：' + baseUrl);
   console.log('题集：' + file + '（' + questions.length + ' 题）\n');

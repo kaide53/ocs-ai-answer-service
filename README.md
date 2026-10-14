@@ -81,6 +81,20 @@
 
 `${type}` 是 OCS 官方支持的特殊占位符，取值是 `single` / `multiple` / `judgement` / `completion`（已对照 OCS 官方文档与源码确认）。
 
+### 多门课程怎么用（COURSE_CONTEXT 不绑定任何一门课）
+
+服务端默认不知道你在上什么课，**推荐留空** `COURSE_CONTEXT`：模型会先自己判断题干属于哪门学科（把判断写进 `subject` 字段），再按那门学科的教材、定义与公式作答。于是一台服务可以同时应付近代史、马原、计算机、外语等不同课程的题。
+
+三种用法，按需选：
+
+1. **留空（默认，推荐）**：靠模型自判学科，最省事，跨课程通用。
+2. **一段时间内只刷一门课**：在 `.env` 里填 `COURSE_CONTEXT=数据结构`，提示词会以这门课为准，准确率略高；换课时记得改回来。
+3. **同时刷多门课，想每题都带课程名**：在 OCS 配置的 `data` 里加一个 `course` 字段，用自定义 handler 从页面抓课程名：
+
+    "course": { "handler": "return (env)=> (document.querySelector('.course-name')?.innerText || document.title || '').slice(0, 30)" }
+
+   选择器按你用的平台改；抓不到就返回空串，服务端会自动退回 .env 的 `COURSE_CONTEXT`（也就是「模型自判学科」）。课程名只影响提示词和联网检索，不影响缓存命中——同一个题目换课程仍然命中同一条缓存。
+
 ### 别忘了 @connect
 
 油猴脚本默认不允许跨域请求本地服务，请在脚本头部的 `@connect` 里加上 `localhost` 与 `127.0.0.1`，或者把脚本管理器里的 `@connect 模式` 设为宽松。
@@ -102,7 +116,7 @@
 | `AI_API_KEY` | 空 | 必填 |
 | `AI_API_URL` | DeepSeek 官方 | 兼容 OpenAI 协议的端点都可以 |
 | `AI_MODEL` | `deepseek-chat` | 想更准可以换 `deepseek-reasoner`（慢一些） |
-| `COURSE_CONTEXT` | 空 | 课程名，例如 `中国近现代史纲要`，会写进提示词 |
+| `COURSE_CONTEXT` | 空 | 可选。留空 = 模型自己判断学科（跨课程通用）；填了 = 按这门课作答 |
 | `AI_TIMEOUT_MS` | 30000 | reasoner 建议 60000 |
 | `AI_TEMPERATURE` | 0 | 越低越稳 |
 | `ENABLE_JSON_MODE` | true | 强制 json 输出，接口不支持时自动降级 |
@@ -167,7 +181,7 @@
 
 ## 📊 准确率回归（证明「更准」的唯一办法）
 
-1. 编辑 `eval/questions.json`，把 30–50 道真题和正确答案填进去（题面可以先用 `/collected` 自动攒）。
+1. 编辑 `eval/questions.json`，把 30–50 道真题和正确答案填进去（题面可以先用 `/collected` 自动攒）。题集可以写一个顶层 `"course"` 作为默认课程，每题也能用 `"course"` 单独覆盖，所以同一份题集可以混多门课。
 2. 先在没有改动的代码上跑一次基线：
 
        npm start
