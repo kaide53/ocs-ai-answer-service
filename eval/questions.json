@@ -1,0 +1,25 @@
+{
+  "note": "准确率回归题集：把题干、选项（A. xx 换行 B. yy）和正确答案字母填进来即可。先跑基线再跑新版，才能证明提分。",
+  "questions": [
+    { "id": 1, "type": "single", "question": "中国近代史的开端是（　　）", "options": "A. 鸦片战争\nB. 第二次鸦片战争\nC. 甲午中日战争\nD. 八国联军侵华战争", "answer": "A" },
+    { "id": 2, "type": "single", "question": "中国近代史上第一个不平等条约是（　　）", "options": "A. 《北京条约》\nB. 《南京条约》\nC. 《马关条约》\nD. 《辛丑条约》", "answer": "B" },
+    { "id": 3, "type": "single", "question": "《南京条约》签订于（　　）", "options": "A. 1840年\nB. 1842年\nC. 1856年\nD. 1860年", "answer": "B" },
+    { "id": 4, "type": "single", "question": "标志着中国半殖民地半封建社会完全形成的是（　　）", "options": "A. 《南京条约》\nB. 《北京条约》\nC. 《马关条约》\nD. 《辛丑条约》", "answer": "D" },
+    { "id": 5, "type": "single", "question": "近代中国第一个全国性的资产阶级革命政党是（　　）", "options": "A. 兴中会\nB. 中国同盟会\nC. 华兴会\nD. 光复会", "answer": "B" },
+    { "id": 6, "type": "single", "question": "辛亥革命爆发的标志是（　　）", "options": "A. 武昌起义\nB. 黄花岗起义\nC. 保路运动\nD. 中华民国成立", "answer": "A" },
+    { "id": 7, "type": "single", "question": "新文化运动开始的标志是（　　）", "options": "A. 《青年杂志》创刊\nB. 五四运动爆发\nC. 《狂人日记》发表\nD. 文学革命兴起", "answer": "A" },
+    { "id": 8, "type": "single", "question": "五四运动爆发于（　　）", "options": "A. 1915年\nB. 1917年\nC. 1919年\nD. 1921年", "answer": "C" },
+    { "id": 9, "type": "single", "question": "中国共产党成立的时间是（　　）", "options": "A. 1919年7月\nB. 1920年8月\nC. 1921年7月\nD. 1922年7月", "answer": "C" },
+    { "id": 10, "type": "single", "question": "中国共产党第一次全国代表大会的召开地是（　　）", "options": "A. 上海\nB. 北京\nC. 广州\nD. 武汉", "answer": "A" },
+    { "id": 11, "type": "single", "question": "中国全民族抗战开始的标志是（　　）", "options": "A. 九一八事变\nB. 一二·九运动\nC. 七七事变\nD. 西安事变", "answer": "C" },
+    { "id": 12, "type": "single", "question": "日本天皇宣布无条件投降的时间是（　　）", "options": "A. 1945年8月15日\nB. 1945年9月2日\nC. 1945年9月3日\nD. 1945年10月25日", "answer": "A" },
+    { "id": 13, "type": "single", "question": "近代以来中国人民第一次取得完全胜利的反侵略战争是（　　）", "options": "A. 鸦片战争\nB. 甲午中日战争\nC. 抗日战争\nD. 抗美援朝战争", "answer": "C" },
+    { "id": 14, "type": "single", "question": "中华人民共和国成立的时间是（　　）", "options": "A. 1949年9月21日\nB. 1949年10月1日\nC. 1950年1月1日\nD. 1949年12月26日", "answer": "B" },
+    { "id": 15, "type": "single", "question": "洋务运动打出的口号是（　　）", "options": "A. 师夷长技以制夷\nB. 自强、求富\nC. 扶清灭洋\nD. 民主、科学", "answer": "B" },
+    { "id": 16, "type": "multiple", "question": "近代中国社会的两大主要矛盾是（　　）", "options": "A. 帝国主义和中华民族的矛盾\nB. 封建主义和人民大众的矛盾\nC. 地主阶级和农民阶级的矛盾\nD. 资产阶级和无产阶级的矛盾", "answer": "AB" },
+    { "id": 17, "type": "multiple", "question": "孙中山提出的三民主义包括（　　）", "options": "A. 民族主义\nB. 民权主义\nC. 民生主义\nD. 民主主义", "answer": "ABC" },
+    { "id": 18, "type": "judgement", "question": "五四运动是中国新民主主义革命的开端。", "options": "A. 正确\nB. 错误", "answer": "A" },
+    { "id": 19, "type": "judgement", "question": "洋务运动使中国走上了富强道路。", "options": "A. 正确\nB. 错误", "answer": "B" },
+    { "id": 20, "type": "completion", "question": "中国共产党独立领导革命战争、创建人民军队的开始是______。", "options": "", "answer": "南昌起义" }
+  ]
+}
