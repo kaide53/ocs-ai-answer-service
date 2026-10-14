@@ -5,3 +5,6 @@ node_modules
 data/
 logs/
 test/.tmp-data/
+
+# 推送用的 SSH 私钥，绝对不能提交
+.ssh-keys/
