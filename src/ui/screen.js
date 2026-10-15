@@ -16,6 +16,7 @@
  */
 const { strWidth, padEnd, truncate, wrap, wrapCapped } = require('./width');
 const { renderBox, divider } = require('./box');
+const layout = require('./layout');
 
 const TYPE_LABEL = {
   single: '单选', multiple: '多选', judgement: '判断', completion: '填空',
@@ -53,10 +54,12 @@ function buildBox(model, theme, width, optLines = 2, withNotes = true, maxOption
   }
   const typeLabel = TYPE_LABEL[model.type] || model.type || '';
   const srcLabel = SOURCE_LABEL[model.typeSource] || model.typeSource || '';
+  // 分屏时栏很窄，标题栏放不下"题型 · 来源"，只留题型
+  const narrow = width < 40;
   return renderBox({
     width,
     titleLeft: '#' + model.index,
-    titleRight: [typeLabel, srcLabel].filter(Boolean).join(' · '),
+    titleRight: narrow ? typeLabel : [typeLabel, srcLabel].filter(Boolean).join(' · '),
     lines: body,
     theme,
   });
@@ -89,24 +92,40 @@ function formatVerdicts(verdicts, theme, width) {
   return out;
 }
 
-/** 结论区：分隔线 + 一行摘要 */
+/** 结论区：分隔线 + 一行摘要（窄栏下拆成两行，避免被截成半截） */
 function formatResult(result, theme, width) {
   if (!result) return [];
   const m = result.meta || {};
   if (result.msg) {
-    return [divider(width, theme), theme.no('  ✗ ') + result.msg + theme.dim('   ' + fmtMs(result.elapsedMs))];
+    const lines = [divider(width, theme)];
+    lines.push(...wrap('  ✗ ' + result.msg + '   ' + fmtMs(result.elapsedMs), width).map((l) => theme.no(l)));
+    return lines;
   }
   const letters = (m.letters || []).join('') || '-';
   const strategy = STRATEGY_LABEL[m.emitStrategy] || m.emitStrategy || '-';
   const verify = m.emitVerified ? theme.green('自检通过') : theme.yellow('自检降级');
-  const head = '  ✓ ' + theme.bold('答案 ' + letters)
+  const answerPart = '  ✓ ' + theme.bold('答案 ' + letters)
     + (result.answer ? ' · ' + truncate(String(result.answer), 26, '…') : '');
-  const tail = [strategy, verify, fmtMs(result.elapsedMs)].filter(Boolean).join(' · ');
-  const out = [divider(width, theme), theme.verdict(head) + '    ' + theme.dim(tail)];
-  if (m.conflict) out.push(theme.yellow('  ⚠ ' + m.conflict));
+  const metaPart = [strategy, verify, fmtMs(result.elapsedMs)].filter(Boolean).join(' · ');
+
+  const out = [divider(width, theme)];
+  if (width < 46) {
+    // 分屏时栏很窄，一行塞不下——答案与元信息分两行，各自都能读全
+    out.push(theme.verdict(answerPart));
+    // 极窄栏下策略名最不重要，先丢掉它，保住自检状态与耗时
+    const narrowMeta = width < 34
+      ? [verify, fmtMs(result.elapsedMs)].filter(Boolean).join(' · ')
+      : metaPart;
+    out.push(theme.dim('    ' + truncate(narrowMeta, width - 4, '…')));
+  } else {
+    out.push(theme.verdict(answerPart) + '    ' + theme.dim(metaPart));
+  }
+  if (m.conflict) out.push(...wrap('  ⚠ ' + m.conflict, width).map((l) => theme.yellow(l)));
   if (m.rechecked) out.push(theme.dim('  · 已定向重问复核'));
   if (result.rawFallback) {
-    out.push(theme.dim('  · 原始输出：' + truncate(String(result.rawFallback).replace(/\s+/g, ' '), width - 14, '…')));
+    for (const l of wrap('  · 原始输出：' + String(result.rawFallback).replace(/\s+/g, ' '), width)) {
+      out.push(theme.dim(truncate(l, width, '…')));
+    }
   }
   return out;
 }
@@ -185,16 +204,60 @@ function composeScreen(model, { width, maxLines, theme }) {
     lines = head.concat(mid.slice(Math.max(0, mid.length - midBudget)), result);
   }
   if (lines.length > H) lines = lines.slice(0, H); // 最后的保险：绝不超过屏幕
+  // 统一补齐到栏宽：多栏并排时靠这个对齐，单栏时也让"每行等宽"这条不变量成立
+  lines = lines.map((l) => layout.padTo(l, W));
   return { lines, box, status: (a.status && statusLine) || null, content, result, dropped, degraded: a.degraded };
 }
 
 /** 等待态：服务空闲时的极简屏 */
 function composeIdle({ width, maxLines, theme, hint }) {
   const t = theme || { dim: (s) => s };
-  return { lines: [t.dim('  ' + (hint || '等待 OCS 题目…'))], box: [], status: null, content: [], result: [], dropped: 0, degraded: null };
+  const W = Math.max(8, Math.floor(width || 8));
+  return {
+    lines: [layout.padTo(t.dim('  ' + (hint || '等待 OCS 题目…')), W)],
+    box: [], status: null, content: [], result: [], dropped: 0, degraded: null,
+  };
+}
+
+/**
+ * 多栏合成：并发答题时把 N 道题并排显示。
+ *
+ * 单栏（N=1）时**直接复用 composeScreen**，保证单题行为与分屏改版之前逐字节一致。
+ * 多栏时每栏独立走一遍降级阶梯（各自按栏宽折行、各自窗口化），
+ * 再由 layout.joinPanes 补齐高度后横向拼接——这样各栏的边框才会水平对齐。
+ *
+ * @param {object[]} models 活跃题目的模型，按到达顺序
+ * @returns {{lines:string[], paneCount:number, overflow:object[]}}
+ */
+function composeWindow(models, { width, maxLines, theme, maxPanes = 3, minPaneWidth = 22, sep = '│' }) {
+  const list = Array.isArray(models) ? models.filter(Boolean) : [];
+  if (!list.length) return { lines: composeIdle({ width, maxLines, theme }).lines, paneCount: 0, overflow: [] };
+  if (list.length === 1) {
+    return { lines: composeScreen(list[0], { width, maxLines, theme }).lines, paneCount: 1, overflow: [] };
+  }
+
+  const paneCount = layout.computePaneCount(list.length, { width, maxPanes, minPaneWidth });
+  const pw = layout.paneWidth(width, paneCount);
+  const overflow = list.slice(paneCount);
+  const footerRows = overflow.length ? 1 : 0;
+  const innerMax = Math.max(3, maxLines - footerRows);
+
+  const panes = list.slice(0, paneCount).map((m) => ({
+    width: pw,
+    lines: composeScreen(m, { width: pw, maxLines: innerMax, theme }).lines,
+  }));
+
+  let lines = layout.joinPanes(panes, { width, sep, maxLines: innerMax });
+  if (overflow.length) {
+    const ids = overflow.map((m) => '#' + m.index).join(' ');
+    lines.push(layout.padTo(theme.dim('  还有 ' + overflow.length + ' 题进行中：' + ids), width));
+  }
+  if (lines.length > maxLines) lines = lines.slice(0, maxLines);
+  return { lines, paneCount, overflow };
 }
 
 module.exports = {
-  composeScreen, composeIdle, buildBox, formatReasoning, formatVerdicts, formatResult,
+  composeScreen, composeWindow, composeIdle, buildBox,
+  formatReasoning, formatVerdicts, formatResult,
   TYPE_LABEL, SOURCE_LABEL, STRATEGY_LABEL, fmtMs,
 };

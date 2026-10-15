@@ -84,6 +84,13 @@ module.exports = {
      * 驻留期间若下一题到达，会被立即抢占。
      */
     DWELL_MS: num(process.env.UI_DWELL_MS, 2500),
+    /**
+     * 最多并排显示几栏。OCS 的「线程数量」上限就是 3（common.ts:857，min1/max3，默认1），
+     * 所以这里默认 3 与它对齐。
+     */
+    MAX_PANES: num(process.env.UI_MAX_PANES, 3),
+    /** 每栏最小宽度；再窄就读不了了，此时宁可少显示一栏，把多出来的题列在底部 */
+    MIN_PANE_WIDTH: num(process.env.UI_MIN_PANE_WIDTH, 22),
   },
 
   /** 回写策略：见 docs/OCS-CONTRACT.md 第五节 */

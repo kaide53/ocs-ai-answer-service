@@ -126,28 +126,27 @@ const CASES = [
     原始报文: 'data/capture.jsonl',
   });
   ui.info('  （这是 npm run demo 的模拟输出，没有真的调用模型）');
+  ui.info('  （三题并发，用来演示 OCS 线程数=3 时的分屏）');
   console.log('');
 
-  for (const [i, c] of CASES.entries()) {
-    const block = ui.beginQuestion({ question: c.question, index: i + 1 });
-    if (c.question.flags.hasImage) block.note('图片题：1 张 base64 直传（OCS 5.x 图片优化）');
+  // 三题**同时**开工，模拟 OCS 的并发搜题
+  const blocks = CASES.map((c, i) => ui.beginQuestion({ question: c.question, index: i + 1 }));
 
-    await sleep(120);
-    // 模拟"思考"流式逐字到达
-    for (const ch of c.reasoning.match(/[\s\S]{1,6}/g) || []) {
-      block.reasoning(ch);
-      await sleep(12);
-    }
-    await sleep(80);
+  /** 把一段文本按小块喂进去，模拟流式到达 */
+  async function streamTo(fn, text, chunk, delay) {
+    const parts = text.match(new RegExp('[\\s\\S]{1,' + chunk + '}', 'g')) || [];
+    for (const p of parts) { fn(p); await sleep(delay); }
+  }
 
-    // 模拟 JSON 内容流式逐块到达（故意切在别扭的位置，顺便验证增量提取）
+  // 三个"答题线程"并发跑，各自带一点错开的节奏
+  await Promise.all(CASES.map(async (c, i) => {
+    const block = blocks[i];
+    await sleep(60 + i * 90);
+    await streamTo((p) => block.reasoning(p), c.reasoning, 6, 14);
+    await sleep(60 + i * 40);
     const json = JSON.stringify(c.json);
-    for (let p = 0; p < json.length; p += 11) {
-      block.content(json.slice(p, p + 11));
-      await sleep(8);
-    }
-    await sleep(60);
-
+    for (let p = 0; p < json.length; p += 11) { block.content(json.slice(p, p + 11)); await sleep(9); }
+    await sleep(80 + i * 60);
     block.finish({
       answer: c.finish.answer,
       elapsedMs: c.finish.ms,
@@ -160,6 +159,9 @@ const CASES = [
         elapsedMs: c.finish.ms,
       },
     });
-    console.log('');
-  }
+  }));
+
+  // 等驻留结束，看窗口回到等待态
+  await sleep(Math.max(1200, (dwellMs === undefined ? 2500 : Number(dwellMs)) + 300));
+  ui.destroy();
 })();

@@ -61,10 +61,10 @@ node -e 'const {ingest}=require("./src/ingest"); /* 逐条 ingest 后汇总 */'
 
 ---
 
-## 四、自动化测试：199 个
+## 四、自动化测试：217 个
 
 ```bash
-npm test     # → tests 199 / pass 199 / fail 0
+npm test     # → tests 217 / pass 217 / fail 0
 ```
 
 | 文件 | 数量 | 覆盖 |
@@ -73,8 +73,9 @@ npm test     # → tests 199 / pass 199 / fail 0
 | `test/pipeline.test.js` | 22 | `ingest → emit → OCS 算法自检` 端到端断言 |
 | `test/reconcile.test.js` | 13 | 逐选项判定 ⇄ 最终答案的对齐策略 |
 | `test/ui.test.js` | 28 | 显示宽度/边框对齐/流式提取/plain 字节兼容/append 路径 |
-| `test/frame.test.js` | 16 | **窗口原地重绘、无残留、任意高度框闭合**（用测试终端重建屏幕） |
+| `test/frame.test.js` | 18 | **窗口原地重绘、并发分屏、任意高度框闭合**（用测试终端重建屏幕） |
 | `test/screen.test.js` | 15 | 屏幕合成、行数上限、窗口化、降级阶梯 |
+| `test/panes.test.js` | 16 | 分屏几何切分、横向拼接、多栏合成、溢出提示 |
 
 `pipeline.test.js` 是验收标准：**我们的输出 → OCS 官方算法 → 必须选中预期选项**。
 
@@ -103,6 +104,22 @@ ANSI 字节流并重建出"用户实际看到的屏幕"。有了它才能对视�
 | **`delta.reasoning_content`** | 真实 HTTP 服务 + mock 先流 reasoning 再流 content | "思考"段落正确折行 |
 | **端点忽略 `stream:true`** | mock 返回普通 JSON（非 SSE） | 按 Content-Type 自动降级 |
 | **UI 自身异常** | 注入会抛错的 `write`、传入全 `null` 的题目 | 均不抛错到调用方 |
+
+### 并发分屏的验证
+
+OCS 的「线程数量」可配范围 1–3（`common.ts:857`，min1/max3，默认1），所以分屏最多需要 3 栏。
+
+| 验证项 | 方法 | 结果 |
+| --- | --- | --- |
+| **栏数决策** | `computePaneCount` 在宽度充足/不足/maxPanes=1 下分别断言 | 通过 |
+| **并排而非堆叠** | 断言两个框的**顶边在同一行**（真的横向拼接） | 通过 |
+| **每行等宽** | 1/2/3 栏 × 各种宽度下断言所有行显示宽度一致 | 通过 |
+| **不串栏** | 断言第一栏内容在同一行的第二栏内容之前 | 通过 |
+| **溢出降级** | 60 列下 3 题 → 断言只并排 2 栏 + 底部列出 `#3` | 通过 |
+| **行数不超屏** | 1/2/3 栏 × maxLines 6/10/16/30 全部断言 | 通过 |
+| **单题零回归** | 断言 `composeWindow([m])` 与 `composeScreen(m)` 输出**完全相同** | 通过 |
+| **中文宽度** | 带 ANSI 的行补齐后断言显示宽度（剥色后）精确 | 通过 |
+| **真实并发** | 同时发 3 个 HTTP 请求，断言三条都 `code=1`，日志带 `[#N]` 前缀 | 通过 |
 
 ---
 

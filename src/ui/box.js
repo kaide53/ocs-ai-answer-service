@@ -74,11 +74,11 @@ function renderBox({ width, titleLeft = '', titleRight = '', lines = [], theme, 
   return out;
 }
 
-/** 分隔线（用于结论与正文之间） */
+/** 分隔线（用于结论与正文之间）。铺满整宽，否则多栏并排时会留下豁口。 */
 function divider(width, theme, char = '─') {
   const t = theme || { paint: (_, s) => s };
   const W = Math.max(4, Math.floor(width));
-  return t.paint('gray', char.repeat(W - 2).padStart(W - 2));
+  return t.paint('gray', char.repeat(W));
 }
 
 module.exports = { renderBox, divider, stripAnsi, GLYPHS };

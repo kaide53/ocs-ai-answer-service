@@ -114,9 +114,9 @@ src/reconcile.js       逐选项判定 ⇄ 最终答案 的对齐策略  ← 防
 src/emit.js            选中项 → OCS 答案协议 + 自检
 src/ocs/matcher.js     从 OCS 源码移植的官方匹配算法   ← 格式正确性的依据
 src/app.js             HTTP 路由（node:http，零依赖）
-src/ui/                终端界面（frame/screen/theme/box/stream-view/render）← 可整体摘掉
+src/ui/                终端界面（frame/layout/screen/theme/box/stream-view/render）← 可整体摘掉
 scripts/demo.js        免 OCS 的界面预览（npm run demo）
-test/                  199 个测试（含 OCS 匹配算法差分验证 + 终端窗口模拟）
+test/                  217 个测试（含 OCS 匹配算法差分验证 + 终端窗口/分屏模拟）
 docs/OCS-CONTRACT.md   OCS 接口契约源码考证
 docs/VERIFICATION.md   全部验证证据（含真实模型端到端实测）
 data/capture.jsonl     原始报文（gitignore）
@@ -125,7 +125,9 @@ data/capture.jsonl     原始报文（gitignore）
 ## 终端界面
 
 一个**固定在原地的窗口**：上方题目框，下方流式显示"思考"与逐项判断，末尾一行结论。
-**所有更新都是原地重绘**——做完的题不会堆在屏幕上往下滚，窗口始终只显示当前这一题。
+**所有更新都是原地重绘**——做完的题不会堆在屏幕上往下滚。
+
+### 单题时的样子
 
 ```
 ╭─ #1 ───────────────────────────────── 单选 · 页面推断 ─╮
@@ -147,26 +149,52 @@ data/capture.jsonl     原始报文（gitignore）
   ✓ 答案 B · 左权        文本匹配 · 自检通过 · 1.7s
 ```
 
+### 并发分屏
+
+OCS 的「线程数量（个）」可配范围是 **1–3**（藏在"高级设置"里，默认 1；
+源码 `common.ts:857`，说明写着"三个线程则代表一秒内同时搜索三道题"）。
+打开后它会同时搜多道题，本服务把它们**并排分栏**：
+
+```
+╭─ #1 ─────── 单选 ─╮│╭─ #2 ─────── 单选 ─╮│╭─ #3 ─────── 单选 ─╮
+│ 第一题：……        │││ 第二题：……        │││ 第三题：……        │
+│   A  甲           │││   A  甲           │││   A  甲           │
+│   B  乙           │││   B  乙           │││   B  乙           │
+╰───────────────────╯│╰───────────────────╯│╰───────────────────╯
+  ✔ A  一号理由       │  ✔ A  二号理由      │  ✔ A  三号理由
+─────────────────────│─────────────────────│─────────────────────
+  ✓ 答案 A · 甲      │  ✓ 答案 A · 甲      │  ✓ 答案 A · 甲
+    自检通过 · 1.2s  │    自检通过 · 1.2s  │    自检通过 · 1.2s
+```
+
+- **栏数** = min(并发题数, `UI_MAX_PANES`, 按宽度能放下的栏数)
+- **宽度**：单栏最多 100 列（卡片太宽读起来累）；多栏时允许用满终端
+- **放不下的题**在窗口底部列一行 `还有 N 题进行中：#x #y`（窄终端下才会发生）
+- **窄栏自适应**：栏宽 < 40 时标题只留题型；结论拆成"答案 / 元信息"两行，
+  保证 25 列的栏里也读得全
+- 上一题答完驻留期间新题到达 → **并排显示**，不会互相抢占
+
 **先看效果，不需要 OCS 也不需要 API Key：**
 
 ```bash
-npm run demo                        # 终端里直接看窗口（原地重绘、有颜色）
+npm run demo                        # 三题并发，终端里直接看分屏（原地重绘、有颜色）
 npm run demo -- --plain             # 看纯文本样子
-npm run demo -- --rich --nocolor    # 管道里看内容（自动无 ANSI）
+npm run demo -- --rich --nocolor    # 管道里看内容（自动无 ANSI，带 [#N] 前缀）
 npm run demo -- --window | less -R  # 管道里也想看窗口重绘
-npm run demo -- --dwell 0           # 答完立刻清空窗口
+npm run demo -- --dwell 0           # 答完立刻收起
 npm run demo -- --nodelay           # 不模拟流式延时
 ```
 
 **开关**：`UI_STYLE=auto|rich|plain`、`UI_COLOR=auto|always|never`、
-`UI_WIDTH=0|数字`、`UI_HEIGHT=0|数字`、`UI_DWELL_MS=毫秒`。
+`UI_WIDTH=0|数字`、`UI_HEIGHT=0|数字`、`UI_DWELL_MS=毫秒`、
+`UI_MAX_PANES=数字`、`UI_MIN_PANE_WIDTH=数字`。
 
 ### 题目框永不被挤掉
 
 窗口高度不够时按固定顺序降级：**先丢状态行 → 再丢备注 → 再压缩选项折行 →
 再压缩显示几个选项 → 最后退化为"顶边+题干+底边"的紧凑框**。
 被裁掉的永远是**下方流式区的内容**，并且会在窗口里显示 `… 前面还有 N 行`。
-题目框与结论行在任何终端高度下都是完整的。
+题目框与结论行在任何终端高度（3–40 行）下都是完整的。
 
 ### 默认是"安全"的
 
@@ -182,18 +210,19 @@ HTTP 响应与终端输出**全部逐字节相同**（仅 `elapsedMs` 是计时�
 
 ## 回退
 
-界面是完全解耦的，三种粒度任选：
+界面是完全解耦的，四种粒度任选：
 
 1. **临时关掉**（不删代码）：`.env` 里设 `UI_STYLE=plain`，行为立刻回到加 UI 之前。
-2. **只关流式**：`AI_STREAM=false`，回到一次性请求（其余不变）。
-3. **整体撤销**：这个目录在加界面之前打过基线提交，所以
+2. **只关分屏**：`UI_MAX_PANES=1`，并发时也只单栏显示。
+3. **只关流式**：`AI_STREAM=false`，回到一次性请求（其余不变）。
+4. **整体撤销**：这个目录在加界面之前打过基线提交，所以
 
 ```bash
 cd ocs-answer-engine
 git log --oneline                 # 找到 "baseline: 加入 UI 之前的纯净状态"
 git diff <baseline>..HEAD --stat  # 先看清改了什么
 git checkout <baseline> -- .      # 或 git reset --hard <baseline>
-rm -rf src/ui scripts/demo.js test/frame.test.js test/screen.test.js test/ui.test.js test/helpers
+rm -rf src/ui scripts/demo.js test/frame.test.js test/screen.test.js test/panes.test.js test/ui.test.js test/helpers
 ```
 
 改动只落在三处老代码里，都很小：`src/app.js`（输出语句换成 `block.*`）、

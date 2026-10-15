@@ -92,24 +92,24 @@ test('窗口：屏幕上只有一道题，卡片每行等宽且不超出屏幕',
   ui.destroy();
 });
 
-test('窗口：第二题到来时整体替换，第一题不留任何残留', async () => {
-  const { ui, term } = windowUi({ rows: 24, width: 60 });
+test('窗口：并发时并排显示；全部收起后窗口清空', async () => {
+  const { ui, term } = windowUi({ rows: 24, width: 60, dwellMs: 900 });
   const b1 = ui.beginQuestion({ question: Q({ title: '第一题：关于抗日战争' }), index: 1 });
-  b1.verdict({ label: 'A', verdict: 'correct', why: '第一题的独有理由甲乙丙' });
-  b1.finish({ answer: '115师', elapsedMs: 1000, meta: { letters: ['A'], emitStrategy: 'text', emitVerified: true } });
-  await settle();
-  assert.ok(term.lines.join('\n').includes('第一题的独有理由'), '第一题应当显示过');
-
+  b1.finish({ answer: '甲', elapsedMs: 100, meta: { letters: ['A'], emitStrategy: 'text', emitVerified: true } });
   const b2 = ui.beginQuestion({ question: Q({ title: '第二题：关于解放战争' }), index: 2 });
-  b2.verdict({ label: 'B', verdict: 'correct', why: '第二题的独有理由丁戊己' });
+  b2.finish({ answer: '乙', elapsedMs: 100, meta: { letters: ['B'], emitStrategy: 'text', emitVerified: true } });
   await settle();
 
   const screen = term.lines.join('\n');
-  assert.ok(screen.includes('第二题'), '第二题要在屏幕上');
-  assert.ok(!screen.includes('第一题'), '第一题必须已被清掉，实际屏幕：\n' + screen);
-  assert.ok(!screen.includes('第一题的独有理由'), '第一题的内容不得残留');
-  assert.equal(term.lines.filter((l) => l.includes('╭')).length, 1, '仍然只有一个框');
-  assert.ok(term.lines.length <= 23);
+  assert.ok(screen.includes('第一题') && screen.includes('第二题'), '两题应当并排显示，实际：\n' + screen);
+  assert.equal(ui.paneCount, 2, '应有两栏');
+  assert.equal(term.lines.filter((l) => l.includes('╭')).length, 1, '两个框的顶边应在同一行（=并排）');
+
+  // 等驻留结束（dwellMs=900，前面 settle 已经花掉一部分），两栏都收起
+  await sleep(1100);
+  const after = term.lines.join('\n');
+  assert.ok(!after.includes('第一题') && !after.includes('第二题'), '驻留结束后应清空，实际：\n' + after);
+  assert.ok(!/╭/.test(after), '清空后不该还有框');
   ui.destroy();
 });
 
@@ -186,31 +186,72 @@ test('窗口：UI_DWELL_MS=0 时答完立刻清空', async () => {
   ui.destroy();
 });
 
-test('窗口：下一题会抢占上一题的驻留', async () => {
-  const { ui, term } = windowUi({ rows: 20, width: 56, dwellMs: 5000 });
+test('窗口：新题与驻留中的旧题并排，而不是互相抢占', async () => {
+  const { ui, term } = windowUi({ rows: 24, width: 80, dwellMs: 5000 });
   const b1 = ui.beginQuestion({ question: Q({ title: '前一题' }), index: 1 });
   b1.finish({ answer: '甲', elapsedMs: 100, meta: { letters: ['A'], emitStrategy: 'text', emitVerified: true } });
   await settle();
   const b2 = ui.beginQuestion({ question: Q({ title: '后一题' }), index: 2 });
   await settle();
   const screen = term.lines.join('\n');
-  assert.ok(screen.includes('后一题'), '新题应在屏幕上');
-  assert.ok(!screen.includes('前一题'), '新题应直接替换掉旧题，而不是等驻留结束');
+  assert.ok(screen.includes('前一题'), '驻留中的旧题应继续可见');
+  assert.ok(screen.includes('后一题'), '新题应与旧题并排');
+  assert.equal(ui.paneCount, 2);
+  // 顶边在同一行 = 真的并排，而不是上下堆叠
+  const topRow = term.lines.find((l) => l.includes('╭')) || '';
+  assert.ok(topRow.includes('#1') && topRow.includes('#2'), '两个框应在同一行上，实际：' + topRow);
   ui.destroy();
 });
 
-test('窗口：并发两题也不会交错（整屏替换天然互斥）', async () => {
-  const { ui, term } = windowUi({ rows: 24, width: 60 });
+test('窗口：并发两题各占一栏，内容不串栏', async () => {
+  const { ui, term } = windowUi({ rows: 24, width: 80, dwellMs: 10000 });
   const b1 = ui.beginQuestion({ question: Q({ title: '并发题一' }), index: 1 });
   const b2 = ui.beginQuestion({ question: Q({ title: '并发题二' }), index: 2 });
   b1.verdict({ label: 'A', verdict: 'correct', why: '一的内容' });
   b2.verdict({ label: 'B', verdict: 'correct', why: '二的内容' });
   await settle();
-  const lines = term.lines.join('\n');
-  const hasA = lines.includes('并发题一');
-  const hasB = lines.includes('并发题二');
-  assert.ok(hasA !== hasB, '同一时刻应只显示其中一题（不能两题都在，也不能都不在），实际：\n' + lines);
-  assert.ok(term.lines.filter((l) => l.includes('╭')).length <= 1, '屏幕上最多一个框');
+
+  const lines = term.lines;
+  const top = lines.find((l) => l.includes('╭')) || '';
+  assert.ok(top.includes('#1') && top.includes('#2'), '两栏应在同一行上并排，实际：' + top);
+
+  // 同一行里，第一栏的文字必须在第二栏之前——若串栏就会错位
+  const rowWithContent = lines.find((l) => l.includes('一的内容')) || '';
+  const i1 = rowWithContent.indexOf('一的内容');
+  const i2 = rowWithContent.indexOf('二的内容');
+  assert.ok(i1 >= 0 && i2 >= 0, '两条内容应在同一行（并排），实际：' + rowWithContent);
+  assert.ok(i1 < i2, '第一栏的内容应在第二栏之前');
+  ui.destroy();
+});
+
+test('窗口：3 题并发时三栏并排', async () => {
+  const { ui, term } = windowUi({ rows: 24, width: 120, dwellMs: 10000 });
+  for (let i = 1; i <= 3; i += 1) {
+    const b = ui.beginQuestion({ question: Q({ title: '并发第' + i + '题' }), index: i });
+    b.verdict({ label: 'A', verdict: 'correct', why: '理由' + i });
+  }
+  await settle();
+  const top = term.lines.find((l) => l.includes('╭')) || '';
+  for (const i of [1, 2, 3]) assert.ok(top.includes('#' + i), '第 ' + i + ' 栏应在顶行，实际：' + top);
+  assert.equal(ui.paneCount, 3);
+
+  // 每行显示宽度必须一致，否则栏与栏会错位
+  const widths = [...new Set(term.lines.map((l) => strWidth(l)))];
+  assert.equal(widths.length, 1, '每行宽度应一致，实际：' + JSON.stringify(widths));
+  assert.ok(term.lines.length <= 23);
+  ui.destroy();
+});
+
+test('窗口：并发数超过能放下的栏数时，多出来的题在底部列出', async () => {
+  // 60 列放 3 栏 → 每栏 19 列 < 最小 22，只能并排 2 栏
+  const { ui, term } = windowUi({ rows: 24, width: 60, dwellMs: 10000 });
+  for (let i = 1; i <= 3; i += 1) {
+    ui.beginQuestion({ question: Q({ title: '并发第' + i + '题' }), index: i });
+  }
+  await settle();
+  const screen = term.lines.join('\n');
+  assert.ok(/还有 1 题进行中/.test(screen), '应提示有题被挤到列表里，实际：\n' + screen);
+  assert.ok(screen.includes('#3'), '被挤出的题号要列出来');
   ui.destroy();
 });
 
