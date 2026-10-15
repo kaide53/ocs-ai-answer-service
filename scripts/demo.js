@@ -22,8 +22,10 @@ function arg(name, def) {
 const asPlain = Boolean(arg('plain', false));
 const forceRich = Boolean(arg('rich', false)) || Boolean(arg('nocolor', false));
 const forceColor = Boolean(arg('color', false));
+const forceWindow = Boolean(arg('window', false));
 const noDelay = Boolean(arg('nodelay', false));
 const width = Number(arg('width', 0)) || 0;
+const dwellMs = arg('dwell', undefined);
 const sleep = (ms) => (noDelay ? Promise.resolve() : new Promise((r) => setTimeout(r, ms)));
 
 /** 三个覆盖不同题型的样例，其中一道是图片题 */
@@ -103,14 +105,17 @@ const CASES = [
 ];
 
 (async () => {
+  const realTTY = Boolean(process.stdout.isTTY);
   const ui = createUi({
     style: asPlain ? 'plain' : forceRich ? 'rich' : 'auto',
     color: asPlain ? 'never' : forceColor ? 'always' : forceRich ? 'never' : 'auto',
     width: width || undefined,
-    // 输出被管道接管时不画旋转符，避免 \r 出现在日志里
-    spinner: Boolean(process.stdout.isTTY),
+    ...(dwellMs === undefined ? {} : { dwellMs: Number(dwellMs) }),
+    // 原地重绘只对真终端有意义；管道里走 append（无 ANSI，输出仍可读）。
+    // 想在管道里看窗口效果：--window，然后 `... | less -R`
+    repaint: forceWindow ? true : realTTY,
     // 没有 TTY 时（管道、CI）也能预览富界面
-    ...(forceRich || forceColor ? { isTTY: true, env: { TERM: 'xterm-256color' } } : {}),
+    ...(forceRich || forceColor || forceWindow ? { isTTY: true, env: { TERM: 'xterm-256color' } } : {}),
   });
 
   ui.banner({

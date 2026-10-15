@@ -1,47 +1,42 @@
 'use strict';
 /**
- * 渲染器：题目卡片 + 流式回复 + 结论行。
+ * 渲染器：一个**固定在原地的窗口**——上方题目框，下方流式内容，全部原地重绘。
  *
- * 设计约束（来自"不要影响现在的版本、要能解耦回退"）：
- *  1. **plain 模式逐字节复刻原输出**——任何非 TTY / TERM=dumb / NO_COLOR 环境下，
- *     行为与加 UI 之前完全一致，也就是说这台机器上的日志输出不会有任何变化。
- *  2. 渲染器不直接碰 `process.stdout`，一切经注入的 `write`，因此可在无 TTY 下单测。
- *  3. 所有写入都包在 try/catch 里——**UI 出错绝不允许影响答题**。
- *  4. append-only，不做整块重绘（重绘需要光标上移，终端缩放/超屏/并发时会错乱）。
+ * 三种输出策略：
+ *  1. plain  —— 非 TTY / TERM=dumb / UI_STYLE=plain。**逐字节复刻加 UI 之前的输出**，绝不出现 ANSI。
+ *  2. window —— 真终端。用 frame 原地重绘，做完的题不残留。
+ *  3. append —— 富界面 + 非原地（管道/日志/demo）。只追加新增行，无光标控制码。
+ *
+ * 设计约束：
+ *  - 渲染器不直接碰 `process.stdout`，一切经注入的 `write`，因此可在无 TTY 下单测；
+ *  - 所有写入包 try/catch——**UI 出错绝不允许影响答题**；
+ *  - window 模式下整个屏幕每次完整替换，所以并发交错**在结构上不可能发生**。
  */
 const cfg = require('../config');
-const { strWidth, padEnd, truncate, wrap, wrapCapped } = require('./width');
-const { renderBox, divider, stripAnsi } = require('./box');
+const { strWidth } = require('./width');
+const { stripAnsi } = require('./box');
 const { createTheme, shouldColor } = require('./theme');
 const { createStreamView } = require('./stream-view');
+const { createFrame } = require('./frame');
+const screen = require('./screen');
 
-const TYPE_LABEL = {
-  single: '单选', multiple: '多选', judgement: '判断', completion: '填空',
-  choice: '选择·待定', unknown: '未知',
-};
-const SOURCE_LABEL = { ocs: '题目给定', dom: '页面推断', shape: '形态推断' };
-const STRATEGY_LABEL = {
-  text: '文本匹配', 'text-json': '多选文本', 'text-hash': '多选文本',
-  raw: '原文匹配', 'raw-json': '多选原文', letter: '字母回退',
-  'option-raw': '选项原文', 'option-text': '选项文本', 'letter(known-bad)': '字母(不推荐)',
-};
+const {
+  composeScreen, composeIdle, fmtMs,
+  TYPE_LABEL, SOURCE_LABEL, STRATEGY_LABEL,
+} = screen;
 
-/** 增量行写入器：把流式片段按宽度折行并逐行吐出 */
+const DEFAULT_ROWS = 24;
+
+/** 增量行写入器：把流式片段按宽度折行并逐行吐出（append 模式用） */
 function createLineWriter(emit, width, indent = '') {
   let cur = '';
   let curW = strWidth(indent);
-  const avail = () => Math.max(1, width - strWidth(indent));
   return {
     push(text) {
-      const s = String(text == null ? '' : text);
-      for (const ch of s) {
+      for (const ch of String(text == null ? '' : text)) {
         if (ch === '\n') { emit(indent + cur); cur = ''; curW = strWidth(indent); continue; }
         const cw = strWidth(ch);
-        if (curW + cw > width && cur !== '') {
-          emit(indent + cur);
-          cur = '';
-          curW = strWidth(indent);
-        }
+        if (curW + cw > width && cur !== '') { emit(indent + cur); cur = ''; curW = strWidth(indent); }
         cur += ch;
         curW += cw;
       }
@@ -51,11 +46,6 @@ function createLineWriter(emit, width, indent = '') {
     },
     get pending() { return cur; },
   };
-}
-
-function fmtMs(ms) {
-  if (!Number.isFinite(ms)) return '';
-  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
 }
 
 /**
@@ -90,13 +80,17 @@ function safeQuestion(q) {
 
 /**
  * @param {object} [opts]
- * @param {(s:string)=>void} [opts.write]  输出通道（默认 process.stdout.write）
+ * @param {(s:string)=>void} [opts.write]   输出通道（默认 process.stdout.write）
  * @param {number} [opts.columns]
+ * @param {number} [opts.rows]
  * @param {boolean} [opts.isTTY]
+ * @param {boolean} [opts.repaint]  是否原地重绘。默认跟随 isTTY；测试可显式指定
  * @param {object} [opts.env]
  * @param {string} [opts.style]  auto | rich | plain
  * @param {string} [opts.color]  auto | always | never
  * @param {number} [opts.width]  0 = 自动
+ * @param {number} [opts.dwellMs] 答完驻留多久再清空；0 = 立刻清空
+ * @param {(fn:Function)=>any} [opts.onResize] 订阅终端尺寸变化（测试可注入，避免真的挂 SIGWINCH）
  */
 function createUi(opts = {}) {
   const env = opts.env || process.env;
@@ -112,47 +106,99 @@ function createUi(opts = {}) {
   const color = shouldColor(colorMode, env, isTTY);
   const theme = createTheme({ enabled: color });
 
-  const detected = Number(opts.columns) || Number(process.stdout.columns) || 0;
-  const override = Number(opts.width) || Number(cfg.UI.WIDTH) || 0;
-  const width = Math.max(44, Math.min(override || detected || 80, 100));
+  // 原地重绘只对真终端有意义；注入了自定义 write 时默认关闭（测试/管道）
+  const repaint = opts.repaint === undefined
+    ? (isTTY && !opts.write)
+    : Boolean(opts.repaint);
 
-  /** 安全写：UI 自身任何异常都不得冒泡到答题链路 */
+  const dwellMs = opts.dwellMs === undefined ? Number(cfg.UI.DWELL_MS) || 0 : Number(opts.dwellMs) || 0;
+
+  let columns = Number(opts.columns) || Number(process.stdout.columns) || 0;
+  let rows = Number(opts.rows) || Number(process.stdout.rows) || 0;
+  const heightOverride = Number(cfg.UI.HEIGHT) || 0;
+  const widthOverride = Number(opts.width) || Number(cfg.UI.WIDTH) || 0;
+
+  function computeWidth() {
+    // 留 1 列，避免恰好占满宽度时终端自动换行把行数算错
+    const cap = columns ? Math.max(20, columns - 1) : 100;
+    return Math.max(30, Math.min(widthOverride || columns || 80, 100, cap));
+  }
+  function computeHeight() {
+    const h = heightOverride || rows || DEFAULT_ROWS;
+    return Math.max(3, h - 1); // 留一行给游标，避免把屏幕顶出去
+  }
+  let width = computeWidth();
+
   const safeWrite = (s) => { try { out(s); } catch { /* 忽略 */ } };
   const line = (s = '') => safeWrite(s + '\n');
 
-  // ——— 块队列：只有队首块实时写，其余把输出缓冲，避免两题的卡片交错 ———
+  const frame = createFrame({ write: safeWrite, repaint: rich && repaint });
+
+  // ——— 当前屏幕状态（用于尺寸变化时重绘）———
+  let currentLines = [];
+  let activeBlock = null;   // 正在显示的块（或刚结束、还在驻留的块）
+  let dwellTimer = null;
+  let lastAppendStatus = null;
+  const tickers = new Set(); // 所有块的刷新定时器，destroy 时要一并清掉
+
+  function paint(lines) {
+    currentLines = Array.isArray(lines) ? lines : [];
+    frame.setLines(currentLines);
+  }
+
+  function repaintCurrent() {
+    if (!rich || !repaint) return;
+    if (activeBlock && activeBlock.model) paint(composeScreen(activeBlock.model, { width, maxLines: computeHeight(), theme }).lines);
+    else paint(composeIdle({ width, maxLines: computeHeight(), theme }).lines);
+  }
+
+  function clearDwell() {
+    if (dwellTimer) { clearTimeout(dwellTimer); dwellTimer = null; }
+  }
+
+  function showIdle() {
+    activeBlock = null;
+    if (rich) paint(composeIdle({ width, maxLines: computeHeight(), theme }).lines);
+  }
+
+  // ——— 块队列：只有队首块驱动屏幕。整屏替换 ⇒ 不可能交错 ———
   const blocks = [];
 
   function standalone(text) {
-    const head = blocks[0];
-    if (head && !head.done) head.pushSystem(text);
-    else line(text);
+    // append 模式没有"区域"可言，直接打印
+    if (!rich || !repaint) { line(text); return; }
+    // 先擦掉窗口，打印一行，再把窗口重画回来——保证外部信息不会打乱区域
+    frame.clear();
+    line(text);
+    repaintCurrent();
   }
 
   function advance() {
     while (blocks.length && blocks[0].done) blocks.shift();
     const head = blocks[0];
     if (head && !head.isHead) head.becomeHead();
+    else if (!head && !activeBlock) showIdle();
   }
 
   // ————————————————————————————————————————————————
-  // plain 模式：逐字节复刻加 UI 之前的输出
+  // plain 模式：逐字节复刻加 UI 之前的输出（这条路径不允许改）
   // ————————————————————————————————————————————————
   function plainBlock(question, index) {
     const pending = [];
     let isHead = false;
     let done = false;
     const drain = () => { while (pending.length) line(pending.shift()); };
-    /** 队首就直接写，否则缓冲——保证多题不交错，同时队首不被延迟 */
     const emitLine = (t) => { if (isHead) line(t); else pending.push(t); };
 
-    const block = {
+    return {
+      model: null,
       pushSystem: (t) => emitLine(t),
       becomeHead() { isHead = true; drain(); },
       note(text) { emitLine('⚠ ' + text); },
       reasoning() { /* plain 模式不展示思考过程 */ },
       content: () => [],
       verdict() { /* plain 模式不展示逐项判定 */ },
+      endReasoning() {},
       phase() {},
       finish(payload) {
         const json = payload.rawResult === undefined ? '' : JSON.stringify(payload.rawResult).slice(0, 300);
@@ -171,176 +217,189 @@ function createUi(opts = {}) {
         pending.push('题型：' + question.type + '（来源 ' + question.typeSource + '，OCS 给的是 ' + JSON.stringify(question.rawType) + '）');
         pending.push('选项：' + question.options.map((o) => o.label + '=' + o.text).join(' | '));
       },
-      get plainPending() { return pending; },
       get isHead() { return isHead; },
       get done() { return done; },
     };
-    return block;
   }
 
   // ————————————————————————————————————————————————
-  // rich 模式
+  // 富界面：window（原地重绘）与 append（只追加新增行）
   // ————————————————————————————————————————————————
   function richBlock(question, index) {
-    const pending = [];
     let isHead = false;
     let done = false;
-    let spinner = null;
-    let spinnerShown = 0;
-    let wroteAnything = false;
-    let reasoningStarted = false;
-    const rw = createLineWriter((s) => emit(s), width, '  ');
+    let ticker = null;
+    let dirty = true;
+    const t0 = Date.now();
     const stream = createStreamView();
-    const timeouts = [];
 
-    const drain = () => { while (pending.length) line(pending.shift()); };
+    // append 模式下的已打印游标
+    let printedBox = false;
+    let printedContent = 0;
+    let printedResult = false;
 
-    function clearSpinner() {
-      if (spinner) { clearInterval(spinner); spinner = null; }
-      // 按上次实际画出的长度回退，避免刷过量空格
-      if (spinnerShown) { safeWrite('\r' + ' '.repeat(spinnerShown) + '\r'); spinnerShown = 0; }
-    }
+    const model = {
+      index,
+      title: question.title,
+      options: question.options,
+      notes: [],
+      type: question.type,
+      typeSource: question.typeSource,
+      status: '正在分析…',
+      reasoning: '',
+      verdicts: [],
+      result: null,
+    };
 
-    function emit(text) {
-      wroteAnything = true;
-      if (isHead) { clearSpinner(); line(text); } else pending.push(text);
-    }
-
-    function startSpinner() {
-      // 只有真终端才跑：注入了自定义 write 说明输出被接管（测试/管道），画旋转符只会污染内容
-      if (!isTTY || !rich || opts.write) return;
-      if (opts.spinner === false) return;
-      const t0 = Date.now();
-      const tick = () => {
-        const text = '  ◐ 正在分析… ' + fmtMs(Date.now() - t0) + '   ';
-        spinnerShown = strWidth(stripAnsi(text));
-        safeWrite('\r' + theme.dim(text));
-      };
-      spinner = setInterval(tick, 200);
-      if (spinner.unref) spinner.unref();
-      tick();
-    }
-
-    const body = [];
-    // 题干
-    for (const l of wrapCapped(question.title || '(无题干)', width - 4, 4)) body.push({ text: l });
-    if (question.options.length) {
-      body.push({ text: '' });
-      for (const o of question.options) {
-        const lines = wrapCapped(o.text || '', width - 9, 2);
-        lines.forEach((l, i) => body.push({ text: (i === 0 ? '  ' + o.label + '  ' : '     ') + l }));
-      }
-    }
-    const noteLines = [];
     if (question.flags && question.flags.hasImage) {
       const n = (question.images || []).length;
-      noteLines.push(n ? '含 ' + n + ' 张图片（base64 直传）' : '含图片链接');
+      model.notes.push(n ? '含 ' + n + ' 张图片（base64 直传）' : '含图片链接');
     }
-    if (question.flags && question.flags.completionUnsafe) noteLines.push('多空填空但拿不到空格数，将拒绝作答');
-    if (noteLines.length) { body.push({ text: '' }); noteLines.forEach((t) => body.push({ text: t, paint: theme.dim })); }
+    if (question.flags && question.flags.completionUnsafe) model.notes.push('多空填空但拿不到空格数，将拒绝作答');
 
-    const typeLabel = TYPE_LABEL[question.type] || question.type;
-    const srcLabel = SOURCE_LABEL[question.typeSource] || question.typeSource;
-    const box = renderBox({
-      width,
-      titleLeft: '#' + index,
-      titleRight: typeLabel + ' · ' + srcLabel,
-      lines: body,
-      theme,
-      ascii: !rich,
-    });
+    function compose() {
+      return composeScreen(model, { width, maxLines: computeHeight(), theme });
+    }
+
+    function appendNew() {
+      const c = compose();
+      if (!printedBox && c.box.length) { c.box.forEach(line); line(''); printedBox = true; }
+      for (let i = printedContent; i < c.content.length; i += 1) line(c.content[i]);
+      printedContent = c.content.length;
+      if (c.status && c.status !== lastAppendStatus) { line(c.status); lastAppendStatus = c.status; }
+      if (!printedResult && c.result.length) { c.result.forEach(line); printedResult = true; }
+    }
+
+    function paintNow() {
+      dirty = false;
+      if (!isHead) return;
+      // 已结束的块不能再被标成"正在分析"
+      if (!done) model.status = '正在分析… ' + fmtMs(Date.now() - t0);
+      if (repaint) paint(compose().lines);
+      else appendNew();
+    }
+
+    function markDirty() { dirty = true; }
+
+    let lastSec = -1;
+    function startTicker() {
+      if (!repaint || ticker) return;
+      ticker = setInterval(() => {
+        if (!isHead || done) return;
+        const sec = Math.floor((Date.now() - t0) / 1000);
+        // 有内容变化或秒数跳动才重绘，避免无谓刷屏
+        if (dirty || sec !== lastSec) { lastSec = sec; paintNow(); }
+      }, 120);
+      if (ticker.unref) ticker.unref();
+      tickers.add(ticker);
+    }
+
+    function stopTicker() {
+      if (!ticker) return;
+      clearInterval(ticker);
+      tickers.delete(ticker);
+      ticker = null;
+    }
 
     const block = {
-      pushSystem: (t) => { if (isHead) { clearSpinner(); line(t); } else pending.push(t); },
-      becomeHead() { isHead = true; drain(); startSpinner(); },
-      note(text) { (isHead ? (t) => { clearSpinner(); line(t); } : (t) => pending.push(t))(theme.yellow('  ⚠ ') + text); },
-      boot() { box.forEach((l) => pending.push(l)); },
+      model,
+      becomeHead() {
+        isHead = true;
+        activeBlock = block;
+        clearDwell();
+        paintNow();
+        if (done) scheduleDwell();
+        else startTicker();
+      },
+      boot() { /* 内容都在 model 里，由 becomeHead 统一绘制 */ },
+      pushSystem: (t) => standalone(t),
+      note(text) { model.notes.push(text); markDirty(); },
       reasoning(chunk) {
         if (!chunk) return;
-        if (!reasoningStarted) {
-          reasoningStarted = true;
-          emit(theme.gray('  · 思考'));
-        }
-        rw.push(chunk);
+        model.reasoning += String(chunk);
+        markDirty();
       },
-      /**
-       * 收尾思考区。line writer 只在超宽/遇 \n 时吐行，最后不足一行的残留会留在缓冲里——
-       * 若不在这里 flush，它会一直等到 finish() 才打印，于是"思考"的最后一行会诡异地
-       * 排在逐项判定之后。所以在开始输出判定前先把思考区关掉。
-       */
-      endReasoning() {
-        if (!reasoningStarted) return;
-        rw.flush();
-        reasoningStarted = false;
-      },
+      endReasoning() { /* 思考是累积字符串，无需收尾 */ },
       content(chunk) {
         const fresh = stream.feed(chunk);
-        if (fresh.length) block.endReasoning();
-        for (const v of fresh) block.verdict(v);
+        for (const v of fresh) model.verdicts.push(v);
+        if (fresh.length) markDirty();
         return fresh;
       },
-      verdict(v) {
-        block.endReasoning();
-        const mark = v.verdict === 'correct' ? theme.ok('  ✔ ')
-          : v.verdict === 'unsure' ? theme.meh('  ? ')
-            : theme.no('  ✘ ');
-        const head = mark + theme.bold(v.label) + '  ';
-        const avail = Math.max(8, width - strWidth('  ✔ X  '));
-        const text = v.why || (v.verdict === 'correct' ? '判定为正确' : v.verdict === 'unsure' ? '不确定' : '判定为错误');
-        const wrapped = wrap(text, avail);
-        emit(head + (v.verdict === 'correct' ? theme.green(wrapped[0]) : wrapped[0]));
-        for (let i = 1; i < wrapped.length; i += 1) emit('     ' + theme.dim(wrapped[i]));
-      },
+      verdict(v) { model.verdicts.push(v); markDirty(); },
       phase(name) {
         const map = {
           request: '请求模型', 'json-retry': '输出不是 JSON，重试',
           recheck: '判定与答案冲突，定向重问', 'network-retry': '上游繁忙，退避重试',
         };
         if (name === 'request') return;
-        emit(theme.dim('  · ' + (map[name] || name)));
+        model.status = map[name] || name;
+        markDirty();
       },
       finish(payload) {
-        block.endReasoning();
-        clearSpinner();
+        stopTicker();
         const m = payload.meta || {};
-        if (payload.msg) {
-          emit(theme.no('  ✗ ') + payload.msg + theme.dim('   ' + fmtMs(payload.elapsedMs)));
-        } else if (stream.count === 0 && stream.raw) {
-          // 一条判定都没提取出来 → 兜底展示原始输出，别让人以为卡住了
-          emit(theme.dim('  · 原始输出：' + truncate(stream.raw.replace(/\s+/g, ' '), width - 14, '…')));
-        }
-        const letters = (m.letters || []).join('') || '-';
-        const strategy = STRATEGY_LABEL[m.emitStrategy] || m.emitStrategy || '-';
-        const verify = m.emitVerified ? theme.green('自检通过') : theme.yellow('自检降级');
-        const parts = [
-          theme.bold('答案 ' + letters),
-          payload.answer ? truncate(String(payload.answer), 28, '…') : '',
-          strategy,
-          verify,
-          fmtMs(payload.elapsedMs),
-        ].filter(Boolean);
-        emit(divider(width, theme));
-        emit(theme.verdict('  ✓ ' + parts.slice(0, 2).join(' · ') + '    ') + theme.dim(parts.slice(2).join(' · ')));
-        if (m.conflict) emit(theme.yellow('  ⚠ ' + m.conflict));
-        if (m.rechecked) emit(theme.dim('  · 已定向重问复核'));
+        model.result = {
+          msg: payload.msg,
+          answer: payload.answer,
+          meta: m,
+          elapsedMs: payload.elapsedMs,
+          rawFallback: (stream.count === 0 && stream.raw) ? stream.raw : null,
+        };
+        model.status = null;
         done = true;
-        clearSpinner();
-        timeouts.forEach(clearTimeout);
-        if (isHead) drain();
+        // 结束必须立刻画一次，不能等节流
+        activeBlock = block;
+        if (repaint) paint(compose().lines); else appendNew();
+        if (isHead) scheduleDwell();
         advance();
       },
       fail(msg) {
-        clearSpinner();
-        emit(theme.red('  ✗ ' + msg));
+        stopTicker();
+        model.result = { msg, elapsedMs: Date.now() - t0 };
+        model.status = null;
         done = true;
-        if (isHead) drain();
+        activeBlock = block;
+        if (repaint) paint(compose().lines); else appendNew();
+        if (isHead) scheduleDwell();
         advance();
       },
       get isHead() { return isHead; },
       get done() { return done; },
-      get wroteAnything() { return wroteAnything; },
     };
+
+    function scheduleDwell() {
+      clearDwell();
+      if (dwellMs <= 0) { showIdle(); return; }
+      dwellTimer = setTimeout(() => {
+        dwellTimer = null;
+        // 驻留期间若已有新题目接管，就不要清屏
+        if (activeBlock === block) showIdle();
+      }, dwellMs);
+      if (dwellTimer.unref) dwellTimer.unref();
+    }
+
     return block;
+  }
+
+  // ——— 终端尺寸变化 ———
+  let resizeHandler = null;
+  function onResize() {
+    columns = Number(opts.columns) || Number(process.stdout.columns) || 0;
+    rows = Number(opts.rows) || Number(process.stdout.rows) || 0;
+    width = computeWidth();
+    repaintCurrent();
+  }
+  if (rich && repaint) {
+    try {
+      if (typeof opts.onResize === 'function') {
+        const off = opts.onResize(onResize);
+        if (typeof off === 'function') resizeHandler = off;
+      } else if (process.stdout.isTTY) {
+        process.on('SIGWINCH', onResize);
+        resizeHandler = () => process.removeListener('SIGWINCH', onResize);
+      }
+    } catch { /* 订阅失败不影响功能 */ }
   }
 
   let counter = 0;
@@ -348,13 +407,14 @@ function createUi(opts = {}) {
   return {
     rich,
     color,
+    repaint,
     width,
     theme,
+    get rows() { return computeHeight(); },
     /** 每题一个块；同步返回，内部自动排队 */
     beginQuestion({ question, index }) {
       counter += 1;
       const idx = index === undefined ? counter : index;
-      // 入口就归一化：之后两条渲染路径都可以无条件信任字段存在
       const q = safeQuestion(question);
       let block;
       try {
@@ -364,8 +424,6 @@ function createUi(opts = {}) {
         block.boot();
         advance();
       } catch (err) {
-        // 最后一道防线：连归一化后的渲染都失败，就退回最朴素的单行输出。
-        // 这里绝不能再抛——UI 出问题不允许影响答题。
         try {
           line('题干：' + q.title);
           block = plainBlock({ title: q.title, options: [], type: q.type, typeSource: q.typeSource, rawType: q.rawType }, idx);
@@ -374,9 +432,8 @@ function createUi(opts = {}) {
           advance();
         } catch {
           block = {
-            note() {}, reasoning() {}, content: () => [], verdict() {}, phase() {},
-            finish() {}, fail() {}, endReasoning() {}, becomeHead() {},
-            isHead: true, done: true,
+            model: null, note() {}, reasoning() {}, content: () => [], verdict() {}, phase() {},
+            finish() {}, fail() {}, endReasoning() {}, becomeHead() {}, isHead: true, done: true,
           };
         }
       }
@@ -388,16 +445,34 @@ function createUi(opts = {}) {
         Object.entries(info || {}).forEach(([k, v]) => line('  ' + k + ' : ' + v));
         return;
       }
-      const rows = Object.entries(info || {}).map(([k, v]) => ({ text: '  ' + padEnd(k, 10) + v }));
-      const box = renderBox({ width, titleLeft: 'ocs-answer-engine', titleRight: '问答服务', lines: rows, theme });
+      // 键按显示宽度补齐（中文键占 2 列，不能直接用 length）
+      const keys = Object.keys(info || {});
+      const keyW = keys.reduce((m, k) => Math.max(m, strWidth(k)), 0);
+      const rowsInfo = keys.map((k) => ({ text: '  ' + k + ' '.repeat(Math.max(0, keyW - strWidth(k))) + '  ' + info[k] }));
+      const box = require('./box').renderBox({ width, titleLeft: 'ocs-answer-engine', titleRight: '问答服务', lines: rowsInfo, theme });
       box.forEach((l) => line(l));
     },
     warn(text) { standalone(theme.yellow('⚠ ' + text)); },
     error(text) { standalone(theme.red('✗ ' + text)); },
     info(text) { standalone(text); },
-    /** 给测试用：当前是否还有未完成的块 */
+    /** 清除驻留并把窗口置空（进程退出前调用，避免留下半截窗口） */
+    /** 清除定时器、撤销尺寸订阅，并把窗口置空（进程退出或测试清理时调用） */
+    destroy() {
+      clearDwell();
+      for (const tk of tickers) clearInterval(tk);
+      tickers.clear();
+      if (resizeHandler) { try { resizeHandler(); } catch { /* 忽略 */ } resizeHandler = null; }
+      frame.clear();
+      currentLines = [];
+      activeBlock = null;
+    },
     get pendingBlocks() { return blocks.filter((b) => !b.done).length; },
+    /** 供测试观察当前屏幕内容（不含颜色控制码） */
+    get screenLines() { return currentLines.slice(); },
   };
 }
 
-module.exports = { createUi, createLineWriter, safeQuestion, TYPE_LABEL, SOURCE_LABEL, STRATEGY_LABEL, fmtMs, stripAnsi };
+module.exports = {
+  createUi, createLineWriter, safeQuestion,
+  TYPE_LABEL, SOURCE_LABEL, STRATEGY_LABEL, fmtMs, stripAnsi,
+};

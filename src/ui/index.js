@@ -20,6 +20,9 @@ function getUi() {
 
 /** 测试用：丢弃当前实例，下次 getUi() 重建 */
 function resetUi() {
+  if (shared && typeof shared.destroy === 'function') {
+    try { shared.destroy(); } catch { /* 忽略 */ }
+  }
   shared = null;
 }
 

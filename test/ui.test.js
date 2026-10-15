@@ -243,7 +243,7 @@ test('非 TTY 环境下 auto 会退回 plain（本机 TERM=dumb 就是这种情�
 // 渲染：rich 模式
 // ————————————————————————————————————————————————
 
-test('rich 模式：卡片包含题干与全部选项，且每行等宽', () => {
+test('append 模式（管道/日志）：卡片包含题干与全部选项，且每行等宽', () => {
   const { ui, text } = collector(64);
   const block = ui.beginQuestion({ question: Q() });
   block.finish({ answer: '左权', elapsedMs: 1744, meta: { letters: ['B'], emitStrategy: 'text', emitVerified: true } });
@@ -256,7 +256,7 @@ test('rich 模式：卡片包含题干与全部选项，且每行等宽', () => 
   assert.equal(widths[0], 64);
 });
 
-test('rich 模式：流式判定按到达顺序出现，结论行含答案', () => {
+test('append 模式：流式判定按到达顺序出现，结论行含答案', () => {
   const { ui, text } = collector(64);
   const block = ui.beginQuestion({ question: Q() });
   block.content('{"option_judgements":[{"label":"A","verdict":"wrong","why":"甲错误"},');
@@ -271,7 +271,7 @@ test('rich 模式：流式判定按到达顺序出现，结论行含答案', () 
   assert.ok(!out.includes('undefined'), '不该把 undefined 打到界面上');
 });
 
-test('rich 模式：思考区的最后一行必须在判定之前打印出来', () => {
+test('append 模式：思考区的最后一行必须在判定之前打印出来', () => {
   const { ui, text } = collector(64);
   const block = ui.beginQuestion({ question: Q() });
   block.reasoning('这是一段比较长的思考内容，长到会折成两行，第二行是结尾。');
@@ -284,7 +284,7 @@ test('rich 模式：思考区的最后一行必须在判定之前打印出来', 
   assert.ok(tail < judge, '思考的残留行不能排到判定之后');
 });
 
-test('rich 模式：一条判定都没提取出来时，兜底展示原始输出', () => {
+test('append 模式：一条判定都没提取出来时，兜底展示原始输出', () => {
   const { ui, text } = collector(64);
   const block = ui.beginQuestion({ question: Q() });
   block.content('模型没有按 JSON 输出，这是一段自由文本');
@@ -292,7 +292,7 @@ test('rich 模式：一条判定都没提取出来时，兜底展示原始输出
   assert.ok(text().includes('原始输出'), '应当兜底展示原始输出');
 });
 
-test('rich 模式：题目带图片与不安全填空时给出提示行', () => {
+test('append 模式：题目带图片与不安全填空时给出提示行', () => {
   const { ui, text } = collector(64);
   const a = ui.beginQuestion({ question: Q({ images: ['data:image/png;base64,x'], flags: { hasImage: true, imageUrls: [], completionUnsafe: false } }) });
   a.finish({ rawResult: { code: 0 } });

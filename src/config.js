@@ -74,8 +74,16 @@ module.exports = {
     STYLE: str(process.env.UI_STYLE, 'auto'),
     /** auto | always | never */
     COLOR: str(process.env.UI_COLOR, 'auto'),
-    /** 0 = 按终端宽度自动；否则固定总宽（会被钳到 44..100） */
+    /** 0 = 按终端宽度自动；否则固定总宽（会被钳到 30..100） */
     WIDTH: num(process.env.UI_WIDTH, 0),
+    /** 0 = 按终端行数自动；否则固定窗口高度 */
+    HEIGHT: num(process.env.UI_HEIGHT, 0),
+    /**
+     * 一道题答完后，结论在窗口里驻留多久再清空（毫秒）。0 = 立刻清空。
+     * 留一点驻留时间是因为下一题可能几十毫秒后就到，字面意义的立刻清空会让答案一闪而过。
+     * 驻留期间若下一题到达，会被立即抢占。
+     */
+    DWELL_MS: num(process.env.UI_DWELL_MS, 2500),
   },
 
   /** 回写策略：见 docs/OCS-CONTRACT.md 第五节 */

@@ -114,9 +114,9 @@ src/reconcile.js       逐选项判定 ⇄ 最终答案 的对齐策略  ← 防
 src/emit.js            选中项 → OCS 答案协议 + 自检
 src/ocs/matcher.js     从 OCS 源码移植的官方匹配算法   ← 格式正确性的依据
 src/app.js             HTTP 路由（node:http，零依赖）
-src/ui/                终端界面（width/theme/box/stream-view/render）← 可整体摘掉
+src/ui/                终端界面（frame/screen/theme/box/stream-view/render）← 可整体摘掉
 scripts/demo.js        免 OCS 的界面预览（npm run demo）
-test/                  168 个测试（含 OCS 匹配算法差分验证）
+test/                  199 个测试（含 OCS 匹配算法差分验证 + 终端窗口模拟）
 docs/OCS-CONTRACT.md   OCS 接口契约源码考证
 docs/VERIFICATION.md   全部验证证据（含真实模型端到端实测）
 data/capture.jsonl     原始报文（gitignore）
@@ -124,7 +124,8 @@ data/capture.jsonl     原始报文（gitignore）
 
 ## 终端界面
 
-每题一张卡片，下方流式显示"思考"与逐项判断，末尾一行结论：
+一个**固定在原地的窗口**：上方题目框，下方流式显示"思考"与逐项判断，末尾一行结论。
+**所有更新都是原地重绘**——做完的题不会堆在屏幕上往下滚，窗口始终只显示当前这一题。
 
 ```
 ╭─ #1 ───────────────────────────────── 单选 · 页面推断 ─╮
@@ -135,6 +136,7 @@ data/capture.jsonl     原始报文（gitignore）
 │   C  包森                                               │
 │   D  洪麟阁                                             │
 ╰─────────────────────────────────────────────────────────╯
+  ◐ 正在分析… 1.2s
   · 思考
   八路军是第八路军。左权任副参谋长，1942 年在山西辽县牺牲。
   ✘ A  陈宇寰非八路军最高级别
@@ -148,23 +150,33 @@ data/capture.jsonl     原始报文（gitignore）
 **先看效果，不需要 OCS 也不需要 API Key：**
 
 ```bash
-npm run demo                      # 终端里直接看（有颜色）
-npm run demo -- --plain           # 看纯文本样子
-npm run demo -- --rich --nocolor  # 管道里也能看富界面布局
-npm run demo -- --nodelay         # 不模拟流式延时
+npm run demo                        # 终端里直接看窗口（原地重绘、有颜色）
+npm run demo -- --plain             # 看纯文本样子
+npm run demo -- --rich --nocolor    # 管道里看内容（自动无 ANSI）
+npm run demo -- --window | less -R  # 管道里也想看窗口重绘
+npm run demo -- --dwell 0           # 答完立刻清空窗口
+npm run demo -- --nodelay           # 不模拟流式延时
 ```
 
-**开关**：`UI_STYLE=auto|rich|plain`、`UI_COLOR=auto|always|never`、`UI_WIDTH=0|数字`。
+**开关**：`UI_STYLE=auto|rich|plain`、`UI_COLOR=auto|always|never`、
+`UI_WIDTH=0|数字`、`UI_HEIGHT=0|数字`、`UI_DWELL_MS=毫秒`。
+
+### 题目框永不被挤掉
+
+窗口高度不够时按固定顺序降级：**先丢状态行 → 再丢备注 → 再压缩选项折行 →
+再压缩显示几个选项 → 最后退化为"顶边+题干+底边"的紧凑框**。
+被裁掉的永远是**下方流式区的内容**，并且会在窗口里显示 `… 前面还有 N 行`。
+题目框与结论行在任何终端高度下都是完整的。
 
 ### 默认是"安全"的
 
-`UI_STYLE=auto` 时，只有**是终端且 `TERM!=dumb`** 才启用富界面。也就是说：
+`UI_STYLE=auto` 时，只有**是终端且 `TERM!=dumb`** 才启用窗口。也就是说：
 
 - 管道 / 重定向到文件 / CI / 本机的 DSH 环境（`TERM=dumb`、`NO_COLOR=1`）→ **自动退回纯文本**，
   输出与加界面之前**逐字节一致**；
-- 你在自己的终端里跑 → 自动变成卡片。
+- 你在自己的终端里跑 → 自动变成窗口。
 
-这一点有测试兜着（`test/ui.test.js` 里那条"plain 模式逐字节复刻"），
+这一点有测试兜着（`test/frame.test.js` 与 `test/ui.test.js`），
 另外把基线提交导出成独立目录、用同一个 mock 端点跑同一道题做过 diff：
 HTTP 响应与终端输出**全部逐字节相同**（仅 `elapsedMs` 是计时抖动）。
 
@@ -181,12 +193,15 @@ cd ocs-answer-engine
 git log --oneline                 # 找到 "baseline: 加入 UI 之前的纯净状态"
 git diff <baseline>..HEAD --stat  # 先看清改了什么
 git checkout <baseline> -- .      # 或 git reset --hard <baseline>
-rm -rf src/ui scripts/demo.js test/ui.test.js   # 再删掉纯新增文件
+rm -rf src/ui scripts/demo.js test/frame.test.js test/screen.test.js test/ui.test.js test/helpers
 ```
 
 改动只落在三处老代码里，都很小：`src/app.js`（输出语句换成 `block.*`）、
 `src/solve.js`（新增流式函数与事件出口，**不传 opts 时行为不变**）、`server.js`（启动卡片）。
-其余全是纯新增文件，删掉即无残留。
+其余全是纯新增文件（`src/ui/` 就是整个界面），删掉即无残留。
+
+> 窗口的原地重绘只依赖两个标准 ANSI 序列（`\x1b[NA` 上移、`\x1b[J` 擦到屏末），
+> macOS 终端、iTerm2、VS Code 终端、Windows Terminal 都支持。
 
 ## 为什么要有 `src/reconcile.js`
 
