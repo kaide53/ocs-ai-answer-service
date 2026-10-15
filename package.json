@@ -1,0 +1,18 @@
+{
+  "name": "ocs-answer-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OCS 网课答题引擎：以 OCS 真实请求契约为设计起点，回写格式经 OCS 官方匹配算法验证",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "report": "node scripts/report-capture.js",
+    "capture": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "license": "MIT"
+}

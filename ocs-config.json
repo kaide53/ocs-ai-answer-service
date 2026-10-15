@@ -1,0 +1,26 @@
+[
+  {
+    "name": "AI 本地题库",
+    "url": "http://localhost:3000/answer",
+    "method": "post",
+    "contentType": "json",
+    "type": "GM_xmlhttpRequest",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "data": {
+      "title": "${title}",
+      "type": "${type}",
+      "options": "${options}",
+      "suggestion_title": "${suggestion_title}",
+      "suggestion_options": "${suggestion_options}",
+      "images": {
+        "handler": "return (env)=> env.images || []"
+      },
+      "dom": {
+        "handler": "return (env)=> { try { var q=document; return JSON.stringify({ radios: q.querySelectorAll('input[type=radio]').length, checks: q.querySelectorAll('input[type=checkbox]').length, textareas: q.querySelectorAll('textarea').length, url: location.host, origin: location.origin, pageTitle: (document.title||'').slice(0,80) }); } catch(e){ return ''; } }"
+      }
+    },
+    "handler": "return (res)=> res.code === 1 ? [undefined, res.answer] : [res.msg, undefined]"
+  }
+]
