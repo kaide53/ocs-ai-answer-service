@@ -8,6 +8,7 @@
     "start": "node server.js",
     "test": "node --test test/*.test.js",
     "report": "node scripts/report-capture.js",
+    "demo": "node scripts/demo.js",
     "capture": "node server.js"
   },
   "engines": {

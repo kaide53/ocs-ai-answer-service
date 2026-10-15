@@ -105,20 +105,88 @@ AI_MODEL=deepseek-chat
 ## 目录结构
 
 ```
-server.js              服务入口
+server.js              服务入口（启动卡片）
 src/config.js          环境变量与默认值
 src/capture.js         原始报文捕获 + 字段画像        ← 第一步用它
 src/ingest.js          OCS 字段 → 结构化题目
-src/solve.js           调大模型解题 + 网络重试 + 定向重问
+src/solve.js           调大模型解题（流式 SSE）+ 降级 + 定向重问
 src/reconcile.js       逐选项判定 ⇄ 最终答案 的对齐策略  ← 防"多选漏选"
 src/emit.js            选中项 → OCS 答案协议 + 自检
 src/ocs/matcher.js     从 OCS 源码移植的官方匹配算法   ← 格式正确性的依据
 src/app.js             HTTP 路由（node:http，零依赖）
-test/                  140 个测试（含 OCS 匹配算法差分验证）
+src/ui/                终端界面（width/theme/box/stream-view/render）← 可整体摘掉
+scripts/demo.js        免 OCS 的界面预览（npm run demo）
+test/                  168 个测试（含 OCS 匹配算法差分验证）
 docs/OCS-CONTRACT.md   OCS 接口契约源码考证
 docs/VERIFICATION.md   全部验证证据（含真实模型端到端实测）
 data/capture.jsonl     原始报文（gitignore）
 ```
+
+## 终端界面
+
+每题一张卡片，下方流式显示"思考"与逐项判断，末尾一行结论：
+
+```
+╭─ #1 ───────────────────────────────── 单选 · 页面推断 ─╮
+│ 抗战时期八路军牺牲的最高将领是（  ）                    │
+│                                                         │
+│   A  陈宇寰                                             │
+│   B  左权                                               │
+│   C  包森                                               │
+│   D  洪麟阁                                             │
+╰─────────────────────────────────────────────────────────╯
+  · 思考
+  八路军是第八路军。左权任副参谋长，1942 年在山西辽县牺牲。
+  ✘ A  陈宇寰非八路军最高级别
+  ✔ B  左权是八路军副参谋长
+  ✘ C  包森级别较低
+  ✘ D  洪麟阁非八路军
+  ───────────────────────────────────────────────────────
+  ✓ 答案 B · 左权        文本匹配 · 自检通过 · 1.7s
+```
+
+**先看效果，不需要 OCS 也不需要 API Key：**
+
+```bash
+npm run demo                      # 终端里直接看（有颜色）
+npm run demo -- --plain           # 看纯文本样子
+npm run demo -- --rich --nocolor  # 管道里也能看富界面布局
+npm run demo -- --nodelay         # 不模拟流式延时
+```
+
+**开关**：`UI_STYLE=auto|rich|plain`、`UI_COLOR=auto|always|never`、`UI_WIDTH=0|数字`。
+
+### 默认是"安全"的
+
+`UI_STYLE=auto` 时，只有**是终端且 `TERM!=dumb`** 才启用富界面。也就是说：
+
+- 管道 / 重定向到文件 / CI / 本机的 DSH 环境（`TERM=dumb`、`NO_COLOR=1`）→ **自动退回纯文本**，
+  输出与加界面之前**逐字节一致**；
+- 你在自己的终端里跑 → 自动变成卡片。
+
+这一点有测试兜着（`test/ui.test.js` 里那条"plain 模式逐字节复刻"），
+另外把基线提交导出成独立目录、用同一个 mock 端点跑同一道题做过 diff：
+HTTP 响应与终端输出**全部逐字节相同**（仅 `elapsedMs` 是计时抖动）。
+
+## 回退
+
+界面是完全解耦的，三种粒度任选：
+
+1. **临时关掉**（不删代码）：`.env` 里设 `UI_STYLE=plain`，行为立刻回到加 UI 之前。
+2. **只关流式**：`AI_STREAM=false`，回到一次性请求（其余不变）。
+3. **整体撤销**：这个目录在加界面之前打过基线提交，所以
+
+```bash
+cd ocs-answer-engine
+git log --oneline                 # 找到 "baseline: 加入 UI 之前的纯净状态"
+git diff <baseline>..HEAD --stat  # 先看清改了什么
+git checkout <baseline> -- .      # 或 git reset --hard <baseline>
+rm -rf src/ui scripts/demo.js test/ui.test.js   # 再删掉纯新增文件
+```
+
+改动只落在三处老代码里，都很小：`src/app.js`（输出语句换成 `block.*`）、
+`src/solve.js`（新增流式函数与事件出口，**不传 opts 时行为不变**）、`server.js`（启动卡片）。
+其余全是纯新增文件，删掉即无残留。
 
 ## 为什么要有 `src/reconcile.js`
 

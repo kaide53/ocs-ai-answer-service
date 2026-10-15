@@ -59,6 +59,23 @@ module.exports = {
     /** 是否把题干里的 img.src 还原成图片附件发给多模态模型 */
     SEND_IMAGES: bool(process.env.SEND_IMAGES, true),
     MAX_IMAGES: num(process.env.MAX_IMAGES, 4),
+    /** 流式请求：终端能边收边显示；关掉则退回一次性返回 */
+    STREAM: bool(process.env.AI_STREAM, true),
+    /** 空闲超时：连续这么久没收到任何数据才判失败（流式下比等满整请求上限更早发现问题） */
+    IDLE_TIMEOUT_MS: num(process.env.AI_IDLE_TIMEOUT_MS, 30000),
+  },
+
+  /**
+   * 终端界面。默认全部 auto：
+   * 非 TTY / TERM=dumb / NO_COLOR 时自动退回纯文本，行为与加 UI 之前一致。
+   */
+  UI: {
+    /** auto | rich | plain。auto：是 TTY 且 TERM!=dumb 才用富界面 */
+    STYLE: str(process.env.UI_STYLE, 'auto'),
+    /** auto | always | never */
+    COLOR: str(process.env.UI_COLOR, 'auto'),
+    /** 0 = 按终端宽度自动；否则固定总宽（会被钳到 44..100） */
+    WIDTH: num(process.env.UI_WIDTH, 0),
   },
 
   /** 回写策略：见 docs/OCS-CONTRACT.md 第五节 */

@@ -61,10 +61,10 @@ node -e 'const {ingest}=require("./src/ingest"); /* 逐条 ingest 后汇总 */'
 
 ---
 
-## 四、自动化测试：140 个
+## 四、自动化测试：168 个
 
 ```bash
-npm test     # → tests 140 / pass 140 / fail 0
+npm test     # → tests 168 / pass 168 / fail 0
 ```
 
 | 文件 | 数量 | 覆盖 |
@@ -72,8 +72,22 @@ npm test     # → tests 140 / pass 140 / fail 0
 | `test/matcher.test.js` | 105 | OCS 匹配算法逐函数行为 + 全部边界 |
 | `test/pipeline.test.js` | 22 | `ingest → emit → OCS 算法自检` 端到端断言 |
 | `test/reconcile.test.js` | 13 | 逐选项判定 ⇄ 最终答案的对齐策略 |
+| `test/ui.test.js` | 28 | 显示宽度/边框对齐/流式提取/plain 字节兼容/并发不交错 |
 
 `pipeline.test.js` 是验收标准：**我们的输出 → OCS 官方算法 → 必须选中预期选项**。
+
+### 终端界面（后加）的验证
+
+| 验证项 | 方法 | 结果 |
+| --- | --- | --- |
+| 边框对齐 | 中文/全角/超长标题下，断言每行显示宽度完全相同 | 全部等宽（含 33 行实测） |
+| **plain 模式不影响现有用法** | 把基线提交导出到独立目录，同一 mock 端点跑同一道题，`diff` 终端输出与 HTTP 响应 | **逐字节相同**（仅 `elapsedMs` 为计时抖动） |
+| 流式提取器 | 同一段 JSON 按 1/2/3/7/13/64 字节切分喂入，断言还原结果一致 | 全部一致 |
+| 中文跨 chunk | `TextDecoder({stream:true})`，在 UTF-8 多字节中间切断 | 无损还原 |
+| `delta.reasoning_content` | 真实 HTTP 服务 + mock 先流 reasoning 再流 content | "思考"段落正确折行，判定顺序正确 |
+| 端点忽略 `stream:true` | mock 返回普通 JSON（非 SSE） | 按 Content-Type 自动降级为一次性处理 |
+| 并发不交错 | 交错触发两个块的事件，断言输出仍为两块连续文本 | 通过 |
+| UI 自身异常 | 注入会抛错的 `write`、传入全 `null` 的题目 | 均不抛错到调用方 |
 
 ---
 

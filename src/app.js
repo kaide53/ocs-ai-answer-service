@@ -69,15 +69,15 @@ async function handleAnswer(res, params, meta) {
   const started = Date.now();
   const question = ingest(params);
 
-  console.log('─'.repeat(60));
-  console.log('题干：' + question.title);
-  console.log('题型：' + question.type + '（来源 ' + question.typeSource + '，OCS 给的是 ' + JSON.stringify(question.rawType) + '）');
-  console.log('选项：' + question.options.map((o) => o.label + '=' + o.text).join(' | '));
+  // —— 输出全部交给 UI 层；UI_STYLE=plain（或非 TTY）时逐字节复刻加 UI 之前的输出 ——
+  const ui = require('./ui').getUi();
+  const block = ui.beginQuestion({ question });
+
   if (question.flags.hasImage) {
     const n = question.images.length;
-    console.log('⚠ 图片题：' + (n ? n + ' 张 base64 直传（OCS 5.x 图片优化）' : 'URL 兜底：' + question.flags.imageUrls.join(' ')));
+    block.note('图片题：' + (n ? n + ' 张 base64 直传（OCS 5.x 图片优化）' : 'URL 兜底：' + question.flags.imageUrls.join(' ')));
   }
-  if (question.flags.completionUnsafe) console.log('⚠ 多空填空但拿不到空格数，将拒绝作答');
+  if (question.flags.completionUnsafe) block.note('多空填空但拿不到空格数，将拒绝作答');
 
   let result;
   if (!cfg.SOLVE.ENABLED) {
@@ -89,7 +89,16 @@ async function handleAnswer(res, params, meta) {
     try {
       const { solve } = require('./solve');
       const { emitVerified } = require('./emit');
-      const s = await solve(question);
+      const s = await solve(question, {
+        onEvent: (evt) => {
+          if (!evt) return;
+          if (evt.type === 'delta') {
+            if (evt.reasoning) block.reasoning(evt.reasoning);
+            if (evt.content) block.content(evt.content);
+          } else if (evt.type === 'phase') block.phase(evt.name);
+          else if (evt.type === 'warn') ui.warn(evt.text);
+        },
+      });
       if (!s.ok) {
         result = { code: 0, msg: '模型未给出可用答案：' + (s.reason || s.conflict || '') };
       } else {
@@ -104,7 +113,7 @@ async function handleAnswer(res, params, meta) {
           ? { code: 1, answer: emitted.answer }
           : { code: 1, answer: emitted.tried && emitted.tried.length ? emitted.tried[emitted.tried.length - 1].answer : '', _emitFailed: true };
         if (!emitted.ok) {
-          console.warn('[emit] OCS 算法自检未通过，已回退到最后一个候选：', JSON.stringify(emitted.tried));
+          ui.warn('[emit] OCS 算法自检未通过，已回退到最后一个候选：' + JSON.stringify(emitted.tried));
         }
         result.meta = {
           type: s.type, declaredType: s.declaredType, subject: s.subject,
@@ -115,14 +124,20 @@ async function handleAnswer(res, params, meta) {
         };
       }
     } catch (err) {
-      console.error('[answer] 出错：' + ((err && err.message) || err));
+      ui.error('[answer] 出错：' + ((err && err.message) || err));
       result = { code: 0, msg: '答题服务异常：' + ((err && err.message) || err) };
     }
   }
 
   result.elapsedMs = Date.now() - started;
-  console.log('返回：' + JSON.stringify(result).slice(0, 300));
   capture.record(Object.assign({}, meta, { result }));
+  block.finish({
+    msg: result.code === 1 ? undefined : result.msg,
+    answer: result.answer,
+    elapsedMs: result.elapsedMs,
+    meta: result.meta,
+    rawResult: result,
+  });
   sendJson(res, 200, result);
 }
 

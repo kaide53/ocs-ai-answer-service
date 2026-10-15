@@ -105,57 +105,198 @@ function cleanJson(s) {
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function callModelOnce(messages) {
+/** 事件出口：没有订阅者时回退到 console，保证纯 CLI 用法不变 */
+function makeEmitter(opts) {
+  const sink = opts && typeof opts.onEvent === 'function' ? opts.onEvent : null;
+  return (evt) => {
+    try {
+      if (sink) sink(evt);
+      else if (evt && evt.type === 'warn') console.warn('[solve] ' + evt.text);
+    } catch { /* UI 抛错不得影响答题 */ }
+  };
+}
+
+/**
+ * SSE 增量解析器。按行切、忽略 `:` 注释与 `[DONE]`，
+ * 同时识别 `delta.content` 与 `delta.reasoning_content`（后者是部分推理模型的分流字段）。
+ * 独立导出以便单测——包括"在任意字节处被切断"的对抗性用例。
+ */
+function createSseParser() {
+  let buf = '';
+  return {
+    push(text) {
+      buf += String(text == null ? '' : text);
+      const out = [];
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, '');
+        buf = buf.slice(i + 1);
+        if (!line || line[0] === ':') continue;
+        if (line.indexOf('data:') !== 0) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') { out.push({ done: true }); continue; }
+        let json;
+        try { json = JSON.parse(payload); } catch { continue; }
+        const item = {};
+        if (json.usage) item.usage = json.usage;
+        const choice = json.choices && json.choices[0];
+        if (choice && choice.finish_reason) item.finishReason = choice.finish_reason;
+        const delta = choice && (choice.delta || choice.message);
+        if (delta) {
+          if (typeof delta.content === 'string' && delta.content) item.content = delta.content;
+          const r = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+            : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+          if (r) item.reasoning = r;
+        }
+        if (Object.keys(item).length) out.push(item);
+      }
+      return out;
+    },
+  };
+}
+
+/**
+ * 发一次请求。`opts.stream === true` 时走 SSE 边收边发事件；
+ * 否则保持原来的"一次性拿完整响应"路径——**不传 opts 时行为与改造前完全一致**。
+ */
+async function callModelOnce(messages, opts = {}) {
+  const emit = opts.onEvent || (() => {});
+  const wantStream = Boolean(opts.stream);
+  const jsonMode = opts.jsonMode === undefined ? cfg.AI.JSON_MODE : Boolean(opts.jsonMode);
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), cfg.AI.TIMEOUT_MS);
+  let abortedBy = '';
+  // 整请求硬上限
+  const hardTimer = setTimeout(() => { abortedBy = 'total'; controller.abort(); }, cfg.AI.TIMEOUT_MS);
+  // 空闲超时：流式下连续收不到数据才判失败
+  let idleTimer = null;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (!wantStream) return;
+    idleTimer = setTimeout(() => { abortedBy = 'idle'; controller.abort(); }, cfg.AI.IDLE_TIMEOUT_MS);
+    if (idleTimer.unref) idleTimer.unref();
+  };
+
   try {
-    const body = { model: cfg.AI.MODEL, messages, temperature: cfg.AI.TEMPERATURE, stream: false };
+    const body = { model: cfg.AI.MODEL, messages, temperature: cfg.AI.TEMPERATURE, stream: wantStream };
     // 思考等级：接口默认 high，对"每题都要跑完"的答题服务偏慢，默认降到 low
     if (cfg.AI.EFFORT) body.effort = cfg.AI.EFFORT;
-    if (cfg.AI.JSON_MODE) body.response_format = { type: 'json_object' };
+    if (jsonMode) body.response_format = { type: 'json_object' };
+
     const res = await fetch(cfg.AI.URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.AI.KEY },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    const text = await res.text();
+
     if (!res.ok) {
+      const text = await res.text().catch(() => '');
       const err = new Error('模型接口 ' + res.status + '：' + text.slice(0, 300));
       err.status = res.status;
+      err.bodyText = text;
       err.retryable = RETRYABLE_STATUS.has(res.status);
       throw err;
     }
-    let data;
-    try { data = JSON.parse(text); } catch { throw new Error('模型接口返回的不是 JSON：' + text.slice(0, 200)); }
-    const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    if (typeof content !== 'string') throw new Error('模型返回里没有 content：' + text.slice(0, 200));
-    return { content, usage: data.usage };
+
+    // —— 一次性读取的路径 ——
+    // 注意：即使我们请求了 stream:true，端点/代理也可能忽略这个标志、直接返回普通 JSON。
+    // 所以这里按 **Content-Type** 判断：不是 text/event-stream 就按完整 JSON 处理。
+    const ctype = String(res.headers.get('content-type') || '').toLowerCase();
+    const isSse = ctype.includes('event-stream');
+    if (!wantStream || !isSse) {
+      if (wantStream && !isSse) emit({ type: 'warn', text: '端点未返回 SSE（Content-Type=' + (ctype || '未知') + '），本次按一次性响应处理' });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error('模型接口返回的不是 JSON：' + text.slice(0, 200)); }
+      const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (typeof content !== 'string') throw new Error('模型返回里没有 content：' + text.slice(0, 200));
+      return { content, usage: data.usage };
+    }
+
+    // —— 流式：边收边发 delta ——
+    const parser = createSseParser();
+    // 注意两件事：
+    //  1) for await 给出的是 Uint8Array，不是 Node Buffer——`chunk.toString('utf8')` 会忽略参数、
+    //     返回逗号拼接的数字串，解析器将一条都匹配不到。必须显式解码。
+    //  2) 中文可能被切在 chunk 边界上，必须用 TextDecoder({stream:true}) 保留半个字符的状态。
+    const decoder = new TextDecoder('utf-8');
+    let content = '';
+    let usage;
+    let finishReason;
+    armIdle();
+    for await (const chunk of res.body) {
+      armIdle();
+      const text = decoder.decode(chunk, { stream: true });
+      if (!text) continue;
+      for (const item of parser.push(text)) {
+        if (item.usage) usage = item.usage;
+        if (item.finishReason) finishReason = item.finishReason;
+        if (item.reasoning) emit({ type: 'delta', reasoning: item.reasoning });
+        if (item.content) { content += item.content; emit({ type: 'delta', content: item.content }); }
+      }
+    }
+    const tail = decoder.decode(); // 冲刷残留的半个字符
+    if (tail) {
+      for (const item of parser.push(tail)) {
+        if (item.content) { content += item.content; emit({ type: 'delta', content: item.content }); }
+      }
+    }
+    if (!content) throw new Error('流式响应没有收到任何 content');
+    return { content, usage, finishReason };
   } catch (err) {
-    // 网络层错误与硬超时同样值得重试
-    if (err.name === 'AbortError') { err.retryable = true; err.message = '模型请求超时(' + cfg.AI.TIMEOUT_MS + 'ms)'; }
-    else if (err.status === undefined) err.retryable = true;
+    if (err.name === 'AbortError' || abortedBy) {
+      err.retryable = true;
+      err.message = abortedBy === 'idle'
+        ? '模型流式响应空闲超过 ' + cfg.AI.IDLE_TIMEOUT_MS + 'ms'
+        : '模型请求超时(' + cfg.AI.TIMEOUT_MS + 'ms)';
+    } else if (err.status === undefined) {
+      err.retryable = true;
+    }
     throw err;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(hardTimer);
+    if (idleTimer) clearTimeout(idleTimer);
   }
 }
 
-/** 带指数退避的重试包装 */
-async function callModel(messages) {
-  let lastErr;
-  for (let attempt = 0; attempt <= cfg.AI.MAX_NETWORK_RETRY; attempt += 1) {
+/**
+ * 带降级与退避的重试包装。
+ * 降级（不消耗网络重试预算，最多 2 次）：
+ *   - 400 且正在流式 → 关流重发（接口不支持 stream 的典型表现）
+ *   - 400 且带了 response_format → 去掉它重发（接口不支持 json_object）
+ * 网络/限流类错误则走指数退避。
+ */
+async function callModel(messages, opts = {}) {
+  const emit = opts.onEvent || (() => {});
+  let stream = opts.stream === undefined ? cfg.AI.STREAM : Boolean(opts.stream);
+  let jsonMode = opts.jsonMode === undefined ? cfg.AI.JSON_MODE : Boolean(opts.jsonMode);
+  let degradeLeft = 2;
+  let netAttempt = 0;
+
+  for (;;) {
     try {
-      return await callModelOnce(messages);
+      return await callModelOnce(messages, { onEvent: emit, stream, jsonMode });
     } catch (err) {
-      lastErr = err;
-      if (!err.retryable || attempt >= cfg.AI.MAX_NETWORK_RETRY) throw err;
-      const waitMs = Math.round(cfg.AI.RETRY_BASE_MS * Math.pow(2, attempt) + Math.random() * 500);
-      console.warn('[solve] 第 ' + (attempt + 1) + ' 次调用失败（' + (err.status || err.name || '未知') + '），' + waitMs + 'ms 后重试：' + String(err.message).slice(0, 140));
-      await sleep(waitMs);
+      if (err.status === 400 && degradeLeft > 0 && stream) {
+        emit({ type: 'warn', text: '接口拒绝流式请求（400），降级为非流式重试' });
+        stream = false; degradeLeft -= 1; continue;
+      }
+      if (err.status === 400 && degradeLeft > 0 && jsonMode) {
+        emit({ type: 'warn', text: '接口不支持 response_format（400），改用纯提示词约束' });
+        jsonMode = false; degradeLeft -= 1; continue;
+      }
+      if (err.retryable && netAttempt < cfg.AI.MAX_NETWORK_RETRY) {
+        const waitMs = Math.round(cfg.AI.RETRY_BASE_MS * Math.pow(2, netAttempt) + Math.random() * 500);
+        netAttempt += 1;
+        emit({ type: 'phase', name: 'network-retry' });
+        emit({ type: 'warn', text: '第 ' + netAttempt + ' 次失败（' + (err.status || err.name || '未知') + '），' + waitMs + 'ms 后重试：' + String(err.message).slice(0, 140) });
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
     }
   }
-  throw lastErr;
 }
 
 /** 把一次模型返回解析成结构；失败返回 null */
@@ -211,26 +352,33 @@ function buildRecheck(question, parsed, rec) {
 }
 
 /**
+ * @param {object} question  ingest 出来的结构化题目
+ * @param {object} [opts]
+ * @param {(evt:object)=>void} [opts.onEvent] 事件出口：delta / phase / warn。
+ *        不传时行为与加 UI 之前完全一致（console 输出、非必要不产生额外请求）。
  * @returns {Promise<{ok:boolean, letters?:string[], textAnswer?:string|null, type?:string,
  *                    confidence?:number, usage?:object, raw?:string, reason?:string}>}
  */
-async function solve(question) {
+async function solve(question, opts = {}) {
+  const emit = makeEmitter(opts);
   if (!cfg.AI.KEY || !cfg.AI.URL || !cfg.AI.MODEL) {
     return { ok: false, reason: 'AI_API_KEY / AI_API_URL / AI_MODEL 未配置完整' };
   }
   const messages = buildMessages(question);
-  const first = await callModel(messages);
+  emit({ type: 'phase', name: 'request' });
+  const first = await callModel(messages, { onEvent: emit });
   const usageAll = [first.usage];
 
   let parsed = parseModelJson(first.content);
   let rawAll = first.content;
   if (!parsed) {
     // JSON 解析失败只重试一次：把上次输出丢回去要求纯 JSON
+    emit({ type: 'phase', name: 'json-retry' });
     const retry = messages.concat([
       { role: 'assistant', content: String(first.content).slice(0, 2000) },
       { role: 'user', content: '上一次输出不是合法 JSON。请只输出 JSON 本体，不要任何其他文字或代码块。' },
     ]);
-    const again = await callModel(retry);
+    const again = await callModel(retry, { onEvent: emit });
     usageAll.push(again.usage);
     rawAll = again.content;
     parsed = parseModelJson(again.content);
@@ -253,7 +401,8 @@ async function solve(question) {
   let finalParsed = parsed;
   if (rec.source === 'answer-for-ambiguous' && question.options.length) {
     try {
-      const recheck = await callModel(messages.concat(buildRecheck(question, parsed, rec)));
+      emit({ type: 'phase', name: 'recheck' });
+      const recheck = await callModel(messages.concat(buildRecheck(question, parsed, rec)), { onEvent: emit });
       usageAll.push(recheck.usage);
       const p2 = parseModelJson(recheck.content);
       if (p2) {
@@ -273,7 +422,7 @@ async function solve(question) {
         }
       }
     } catch (err) {
-      console.warn('[solve] 定向重问失败，沿用首次结论：' + ((err && err.message) || err));
+      emit({ type: 'warn', text: '定向重问失败，沿用首次结论：' + ((err && err.message) || err) });
     }
   }
 
@@ -303,4 +452,7 @@ async function solve(question) {
   };
 }
 
-module.exports = { solve, buildMessages, buildTextPrompt, buildRecheck, parseModelJson, SYSTEM };
+module.exports = {
+  solve, buildMessages, buildTextPrompt, buildRecheck, parseModelJson, SYSTEM,
+  createSseParser, callModel, callModelOnce, makeEmitter,
+};
