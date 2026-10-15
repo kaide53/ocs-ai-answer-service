@@ -104,8 +104,11 @@ function formatResult(result, theme, width) {
   const letters = (m.letters || []).join('') || '-';
   const strategy = STRATEGY_LABEL[m.emitStrategy] || m.emitStrategy || '-';
   const verify = m.emitVerified ? theme.green('自检通过') : theme.yellow('自检降级');
+  // 极窄栏下答案原文（多选时可能是 '["115师","120师"]' 这种长串）会被截成半截，
+  // 反而更难读——这时候只留字母。
+  const showAnswerText = width >= 34 && Boolean(result.answer);
   const answerPart = '  ✓ ' + theme.bold('答案 ' + letters)
-    + (result.answer ? ' · ' + truncate(String(result.answer), 26, '…') : '');
+    + (showAnswerText ? ' · ' + truncate(String(result.answer), 26, '…') : '');
   const metaPart = [strategy, verify, fmtMs(result.elapsedMs)].filter(Boolean).join(' · ');
 
   const out = [divider(width, theme)];
